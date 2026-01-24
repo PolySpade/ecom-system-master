@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_serena_serena__check_onboarding_performed",
+      "mcp__plugin_serena_serena__get_current_config",
+      "mcp__plugin_serena_serena__activate_project",
+      "Bash(uv venv:*)",
+      "Bash(uv pip install:*)",
+      "Bash(dir:*)",
+      "Bash(test:*)",
+      "Bash(powershell -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; .\\\\.venv\\\\Scripts\\\\pyinstaller.exe --clean ecom_video_tracker.spec\")"
+    ]
+  }
+}

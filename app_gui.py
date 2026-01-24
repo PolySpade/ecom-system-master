@@ -1,0 +1,1954 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext, filedialog
+import cv2
+from PIL import Image, ImageTk
+import threading
+import time
+import logging
+import os
+import subprocess
+import platform
+from datetime import datetime
+from tkcalendar import DateEntry
+from camera_handler import CameraHandler
+from barcode_handler import BarcodeHandler
+from database import Database
+import config
+from settings_manager import SettingsManager
+from camera_utils import get_available_cameras
+
+# Configure logging
+os.makedirs(config.LOG_PATH, exist_ok=True)
+logging.basicConfig(
+    level=getattr(logging, config.LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(config.LOG_FILE),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+
+class EcomVideoTrackerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Ecom Video Tracker")
+        self.root.geometry("1000x800")
+        self.root.resizable(True, True)
+
+        # Set window icon (optional - will use default if no icon)
+        try:
+            # You can add an icon file later: self.root.iconbitmap('icon.ico')
+            pass
+        except:
+            pass
+
+        # Initialize handlers
+        self.camera = CameraHandler()
+        self.barcode_handler = BarcodeHandler()
+        self.db = Database()
+
+        # State variables
+        self.current_transaction_id = None
+        self.recording_start_time = None
+        self.update_running = True
+
+        # Setup UI
+        self.setup_ui()
+
+        # Start camera feed
+        self.update_camera_feed()
+
+        # Start status updates
+        self.update_status()
+
+        # Load initial recordings
+        self.load_recordings()
+
+        # Handle window close
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        logger.info("GUI Application started")
+
+    def setup_ui(self):
+        """Setup the user interface."""
+        # Configure style with modern colors
+        style = ttk.Style()
+        style.theme_use('clam')
+
+        # Configure button styles
+        style.configure('Primary.TButton',
+                       background='#667eea',
+                       foreground='white',
+                       padding=(15, 8),
+                       font=('Arial', 10, 'bold'))
+        style.map('Primary.TButton',
+                 background=[('active', '#5568d3')])
+
+        style.configure('Danger.TButton',
+                       background='#dc2626',
+                       foreground='white',
+                       padding=(15, 8),
+                       font=('Arial', 10, 'bold'))
+        style.map('Danger.TButton',
+                 background=[('active', '#b91c1c')])
+
+        style.configure('Success.TButton',
+                       background='#10b981',
+                       foreground='white',
+                       padding=(15, 8),
+                       font=('Arial', 10, 'bold'))
+        style.map('Success.TButton',
+                 background=[('active', '#059669')])
+
+        # Set window background color
+        self.root.configure(bg='#f0f4f8')
+
+        # Main container with gradient-like background
+        main_frame = tk.Frame(self.root, bg='#f0f4f8')
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=0, pady=0)
+
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+
+        # Header
+        self.create_header(main_frame)
+
+        # Content area (two columns)
+        content_frame = tk.Frame(main_frame, bg='#f0f4f8')
+        content_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=15, pady=15)
+        content_frame.columnconfigure(0, weight=3)
+        content_frame.columnconfigure(1, weight=2)
+        content_frame.rowconfigure(0, weight=1)
+
+        # Left panel - Camera feed
+        self.create_camera_panel(content_frame)
+
+        # Right panel - Controls and info
+        self.create_control_panel(content_frame)
+
+        # Status bar
+        self.create_status_bar(main_frame)
+
+    def create_header(self, parent):
+        """Create beautiful gradient header."""
+        header_frame = tk.Frame(parent, bg='#667eea', height=80)
+        header_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        header_frame.grid_propagate(False)
+        header_frame.columnconfigure(0, weight=1)
+
+        # Title
+        title_label = tk.Label(
+            header_frame,
+            text="📹 Ecom Video Tracker",
+            font=("Arial", 24, "bold"),
+            bg='#667eea',
+            fg='white'
+        )
+        title_label.grid(row=0, column=0, sticky=tk.W, padx=20, pady=20)
+
+        # Settings button with modern styling
+        settings_btn = tk.Button(
+            header_frame,
+            text="⚙️ Settings",
+            command=self.open_settings,
+            font=("Arial", 11, "bold"),
+            bg='#5568d3',
+            fg='white',
+            bd=0,
+            padx=20,
+            pady=10,
+            cursor='hand2',
+            relief=tk.FLAT
+        )
+        settings_btn.grid(row=0, column=1, sticky=tk.E, padx=20, pady=20)
+
+    def create_camera_panel(self, parent):
+        """Create beautiful camera feed panel."""
+        # White card with shadow effect
+        camera_frame = tk.Frame(parent, bg='white', relief=tk.FLAT, bd=0)
+        camera_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 8))
+        camera_frame.rowconfigure(1, weight=1)
+        camera_frame.columnconfigure(0, weight=1)
+
+        # Header
+        header = tk.Frame(camera_frame, bg='white')
+        header.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=15, pady=(15, 10))
+
+        title = tk.Label(
+            header,
+            text="📹 Camera Feed",
+            font=("Arial", 14, "bold"),
+            bg='white',
+            fg='#333'
+        )
+        title.pack(side=tk.LEFT)
+
+        # Camera display container
+        self.camera_container = tk.Frame(camera_frame, bg='#000', relief=tk.SOLID, bd=2)
+        self.camera_container.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=15, pady=(0, 15))
+        self.camera_container.rowconfigure(0, weight=1)
+        self.camera_container.columnconfigure(0, weight=1)
+
+        # Camera display
+        self.camera_label = tk.Label(self.camera_container, text="Initializing camera...", bg='#000', fg='white', anchor=tk.CENTER)
+        self.camera_label.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Recording indicator
+        self.recording_indicator = tk.Label(
+            self.camera_container,
+            text="",
+            font=("Arial", 12, "bold"),
+            fg="white",
+            bg="#dc2626",
+            anchor=tk.CENTER,
+            relief=tk.FLAT,
+            padx=15,
+            pady=5
+        )
+        # Will be shown when recording starts
+
+    def create_control_panel(self, parent):
+        """Create beautiful control and information panel."""
+        control_frame = tk.Frame(parent, bg='#f0f4f8')
+        control_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(8, 0))
+        control_frame.columnconfigure(0, weight=1)
+        control_frame.rowconfigure(3, weight=1)  # Make recordings list expandable
+
+        # Barcode input section
+        self.create_barcode_input(control_frame)
+
+        # Search button (opens separate window)
+        self.create_search_button(control_frame)
+
+        # System info section
+        self.create_system_info(control_frame)
+
+        # Recordings list section
+        self.create_recordings_list(control_frame)
+
+    def create_barcode_input(self, parent):
+        """Create beautiful barcode input section."""
+        # White card
+        input_frame = tk.Frame(parent, bg='white', relief=tk.FLAT, bd=0)
+        input_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
+
+        # Header
+        header = tk.Frame(input_frame, bg='white')
+        header.pack(fill=tk.X, padx=15, pady=(15, 10))
+
+        title = tk.Label(
+            header,
+            text="📦 Barcode Input",
+            font=("Arial", 13, "bold"),
+            bg='white',
+            fg='#333'
+        )
+        title.pack(anchor=tk.W)
+
+        # Content
+        content = tk.Frame(input_frame, bg='white')
+        content.pack(fill=tk.X, padx=15, pady=(0, 15))
+
+        # Video Label selection
+        tk.Label(
+            content,
+            text="Video Label:",
+            font=("Arial", 10, "bold"),
+            bg='white',
+            fg='#555'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        # Label dropdown
+        self.label_var = tk.StringVar(value="Normal (Standard)")
+        self.label_options = [
+            "Return and Refund Unboxing",
+            "Return Parcel Unboxing",
+            "Normal (Standard)"
+        ]
+
+        label_frame = tk.Frame(content, bg='white')
+        label_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.label_combo = ttk.Combobox(
+            label_frame,
+            textvariable=self.label_var,
+            values=self.label_options,
+            state='readonly',
+            font=("Arial", 10)
+        )
+        self.label_combo.pack(fill=tk.X)
+
+        # Barcode entry label
+        tk.Label(
+            content,
+            text="Scan or Enter Barcode:",
+            font=("Arial", 10),
+            bg='white',
+            fg='#555'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        # Entry field
+        self.barcode_entry = tk.Entry(
+            content,
+            font=("Arial", 12),
+            relief=tk.SOLID,
+            bd=2,
+            highlightthickness=0
+        )
+        self.barcode_entry.pack(fill=tk.X, pady=(0, 10))
+        self.barcode_entry.bind('<Return>', lambda e: self.process_barcode())
+        self.barcode_entry.focus()
+
+        # Help text
+        help_label = tk.Label(
+            content,
+            text="Scan continuously: Each barcode stops the\nprevious recording and starts a new one.",
+            font=("Arial", 9),
+            bg='white',
+            fg='#888',
+            justify=tk.LEFT
+        )
+        help_label.pack(anchor=tk.W, pady=(0, 12))
+
+        # Buttons
+        button_frame = tk.Frame(content, bg='white')
+        button_frame.pack(fill=tk.X)
+
+        self.submit_button = tk.Button(
+            button_frame,
+            text="▶ Submit Barcode",
+            command=self.process_barcode,
+            font=("Arial", 10, "bold"),
+            bg='#667eea',
+            fg='white',
+            bd=0,
+            padx=15,
+            pady=8,
+            cursor='hand2',
+            relief=tk.FLAT
+        )
+        self.submit_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        self.stop_button = tk.Button(
+            button_frame,
+            text="⏹ Stop Recording",
+            command=self.manual_stop,
+            font=("Arial", 10, "bold"),
+            bg='#dc2626',
+            fg='white',
+            bd=0,
+            padx=15,
+            pady=8,
+            cursor='hand2',
+            state=tk.DISABLED,
+            relief=tk.FLAT
+        )
+        self.stop_button.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def create_search_button(self, parent):
+        """Create beautiful search button."""
+        search_frame = tk.Frame(parent, bg='#f0f4f8')
+        search_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
+
+        search_btn = tk.Button(
+            search_frame,
+            text="🔍 Search Recordings",
+            command=self.open_search_window,
+            font=("Arial", 11, "bold"),
+            bg='#10b981',
+            fg='white',
+            bd=0,
+            padx=20,
+            pady=12,
+            cursor='hand2',
+            relief=tk.FLAT
+        )
+        search_btn.pack(fill=tk.X)
+
+        help_label = tk.Label(
+            search_frame,
+            text="Click to search and view recordings",
+            font=("Arial", 9),
+            bg='#f0f4f8',
+            fg='#888'
+        )
+        help_label.pack(pady=(5, 0))
+
+    def create_system_info(self, parent):
+        """Create beautiful system information section."""
+        # White card
+        info_frame = tk.Frame(parent, bg='white', relief=tk.FLAT, bd=0)
+        info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 12))
+
+        # Header
+        header = tk.Frame(info_frame, bg='white')
+        header.pack(fill=tk.X, padx=15, pady=(15, 10))
+
+        title = tk.Label(
+            header,
+            text="📊 System Status",
+            font=("Arial", 13, "bold"),
+            bg='white',
+            fg='#333'
+        )
+        title.pack(anchor=tk.W)
+
+        # Content
+        content = tk.Frame(info_frame, bg='white')
+        content.pack(fill=tk.X, padx=15, pady=(0, 15))
+
+        # Info rows
+        info_data = [
+            ("⚡ Status:", "status_label", "Idle", "#6b7280"),
+            ("📄 Current File:", "filename_label", "-", "#6b7280"),
+            ("⏱️ Duration:", "duration_label", "00:00", "#6b7280"),
+            ("💾 Storage Used:", "storage_label", "0 MB", "#6b7280")
+        ]
+
+        for icon_label, attr_name, default_text, color in info_data:
+            row = tk.Frame(content, bg='white')
+            row.pack(fill=tk.X, pady=4)
+
+            tk.Label(
+                row,
+                text=icon_label,
+                font=("Arial", 10, "bold"),
+                bg='white',
+                fg='#555',
+                width=15,
+                anchor=tk.W
+            ).pack(side=tk.LEFT)
+
+            label = tk.Label(
+                row,
+                text=default_text,
+                font=("Arial", 10),
+                bg='white',
+                fg=color,
+                anchor=tk.W
+            )
+            label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            setattr(self, attr_name, label)
+
+    def create_recordings_list(self, parent):
+        """Create beautiful recent recordings list section."""
+        # White card
+        list_frame = tk.Frame(parent, bg='white', relief=tk.FLAT, bd=0)
+        list_frame.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        # Header
+        header = tk.Frame(list_frame, bg='white')
+        header.pack(fill=tk.X, padx=15, pady=(15, 10))
+
+        title = tk.Label(
+            header,
+            text="📝 Recent Recordings",
+            font=("Arial", 13, "bold"),
+            bg='white',
+            fg='#333'
+        )
+        title.pack(anchor=tk.W)
+
+        # Content
+        content = tk.Frame(list_frame, bg='white')
+        content.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+
+        # Scrolled text for recordings
+        self.recordings_text = scrolledtext.ScrolledText(
+            content,
+            wrap=tk.WORD,
+            width=40,
+            height=15,
+            font=("Courier", 9),
+            state=tk.DISABLED,
+            bg='#f8f9fa',
+            relief=tk.SOLID,
+            bd=1
+        )
+        self.recordings_text.pack(fill=tk.BOTH, expand=True)
+
+    def create_status_bar(self, parent):
+        """Create beautiful status bar."""
+        status_frame = tk.Frame(parent, bg='#e5e7eb', height=35)
+        status_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        status_frame.grid_propagate(False)
+
+        self.status_bar = tk.Label(
+            status_frame,
+            text="🟢 Ready",
+            anchor=tk.W,
+            font=("Arial", 9),
+            bg='#e5e7eb',
+            fg='#374151',
+            padx=15
+        )
+        self.status_bar.pack(fill=tk.BOTH, expand=True)
+
+    def update_camera_feed(self):
+        """Update the camera feed display."""
+        if not self.update_running:
+            return
+
+        frame = self.camera.get_frame()
+
+        if frame is not None:
+            # Get original frame dimensions
+            original_height, original_width = frame.shape[:2]
+
+            # Get container size dynamically
+            self.camera_container.update_idletasks()
+            container_width = self.camera_container.winfo_width()
+            container_height = self.camera_container.winfo_height()
+
+            # Use minimum dimensions if container not yet sized
+            if container_width < 100:
+                container_width = 640
+            if container_height < 100:
+                container_height = 480
+
+            # Leave some padding for the container border
+            max_display_width = container_width - 4
+            max_display_height = container_height - 4
+
+            # Calculate aspect ratio preserving dimensions
+            aspect_ratio = original_width / original_height
+
+            # Calculate new dimensions while maintaining aspect ratio
+            if original_width / max_display_width > original_height / max_display_height:
+                # Width is the limiting factor
+                display_width = max_display_width
+                display_height = int(max_display_width / aspect_ratio)
+            else:
+                # Height is the limiting factor
+                display_height = max_display_height
+                display_width = int(max_display_height * aspect_ratio)
+
+            # Ensure minimum dimensions
+            display_width = max(1, display_width)
+            display_height = max(1, display_height)
+
+            # Resize frame maintaining aspect ratio
+            frame = cv2.resize(frame, (display_width, display_height), interpolation=cv2.INTER_AREA)
+
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Convert to PIL Image
+            img = Image.fromarray(frame_rgb)
+
+            # Convert to PhotoImage
+            photo = ImageTk.PhotoImage(image=img)
+
+            # Update label
+            self.camera_label.configure(image=photo)
+            self.camera_label.image = photo
+
+        # Schedule next update
+        self.root.after(30, self.update_camera_feed)
+
+    def update_status(self):
+        """Update status information."""
+        if not self.update_running:
+            return
+
+        try:
+            # Update recording duration
+            if self.camera.is_recording() and self.recording_start_time:
+                duration = int(time.time() - self.recording_start_time)
+                mins = duration // 60
+                secs = duration % 60
+                self.duration_label.configure(text=f"{mins:02d}:{secs:02d}")
+
+            # Update storage info
+            storage_mb = self.db.get_total_storage_used()
+            self.storage_label.configure(text=f"{storage_mb:.2f} MB")
+
+        except Exception as e:
+            logger.error(f"Error updating status: {e}")
+
+        # Schedule next update
+        self.root.after(1000, self.update_status)
+
+    def process_barcode(self):
+        """Process barcode input."""
+        barcode_input = self.barcode_entry.get().strip()
+
+        if not barcode_input:
+            messagebox.showwarning("Input Required", "Please enter a barcode")
+            return
+
+        try:
+            # Get selected label
+            selected_label = self.label_var.get()
+
+            # Process barcode with current recording state
+            result = self.barcode_handler.process_barcode(barcode_input, self.camera.is_recording())
+
+            if result['action'] == 'invalid':
+                messagebox.showerror("Invalid Barcode", "The barcode entered is invalid")
+                return
+
+            if result['action'] == 'start':
+                # Start recording with label
+                filename = self.camera.start_recording(result['barcode'], selected_label)
+
+                # Create database transaction with label
+                self.current_transaction_id = self.db.create_transaction(result['barcode'], filename, selected_label)
+
+                # Update UI
+                self.recording_start_time = time.time()
+                self.update_ui_recording(True, filename, selected_label)
+                self.set_status_bar(f"Recording started: {result['barcode']} ({selected_label})", "success")
+
+            elif result['action'] == 'stop_and_start':
+                # Stop current recording
+                recording_info = self.camera.stop_recording()
+
+                # Update database for completed recording
+                if self.current_transaction_id:
+                    self.db.complete_transaction(
+                        self.current_transaction_id,
+                        recording_info['duration'],
+                        recording_info['file_size_mb'],
+                        'barcode'
+                    )
+
+                # Immediately start new recording with this barcode and label
+                new_filename = self.camera.start_recording(result['barcode'], selected_label)
+
+                # Create new database transaction with label
+                self.current_transaction_id = self.db.create_transaction(result['barcode'], new_filename, selected_label)
+
+                # Update UI
+                self.recording_start_time = time.time()
+                self.update_ui_recording(True, new_filename, selected_label)
+                self.set_status_bar(
+                    f"Switched to new recording: {result['barcode']} ({selected_label}) (Previous: {recording_info['duration']}s)",
+                    "success"
+                )
+
+                # Reload recordings list
+                self.load_recordings()
+
+            elif result['action'] == 'stop':
+                # Stop recording
+                recording_info = self.camera.stop_recording()
+
+                # Update database
+                if self.current_transaction_id:
+                    self.db.complete_transaction(
+                        self.current_transaction_id,
+                        recording_info['duration'],
+                        recording_info['file_size_mb'],
+                        'barcode'
+                    )
+
+                # Update UI
+                self.recording_start_time = None
+                self.current_transaction_id = None
+                self.update_ui_recording(False)
+                self.set_status_bar(
+                    f"Recording stopped: {recording_info['duration']}s, {recording_info['file_size_mb']:.2f}MB",
+                    "success"
+                )
+
+                # Reload recordings list
+                self.load_recordings()
+
+            # Clear input
+            self.barcode_entry.delete(0, tk.END)
+            self.barcode_entry.focus()
+
+        except Exception as e:
+            logger.error(f"Error processing barcode: {e}")
+            messagebox.showerror("Error", f"Failed to process barcode: {str(e)}")
+
+    def manual_stop(self):
+        """Manually stop recording."""
+        try:
+            if not self.camera.is_recording():
+                messagebox.showwarning("Not Recording", "No recording in progress")
+                return
+
+            # Stop recording
+            recording_info = self.camera.stop_recording()
+
+            # Update database
+            if self.current_transaction_id:
+                self.db.complete_transaction(
+                    self.current_transaction_id,
+                    recording_info['duration'],
+                    recording_info['file_size_mb'],
+                    'manual'
+                )
+
+            # Update UI
+            self.recording_start_time = None
+            self.current_transaction_id = None
+            self.update_ui_recording(False)
+            self.set_status_bar(
+                f"Recording stopped manually: {recording_info['duration']}s, {recording_info['file_size_mb']:.2f}MB",
+                "success"
+            )
+
+            # Reload recordings list
+            self.load_recordings()
+            self.barcode_entry.focus()
+
+        except Exception as e:
+            logger.error(f"Error stopping recording: {e}")
+            messagebox.showerror("Error", f"Failed to stop recording: {str(e)}")
+
+    def update_ui_recording(self, recording, filename="-", label=None):
+        """Update UI based on recording state."""
+        if recording:
+            # Show recording indicator with label
+            indicator_text = f"🔴 RECORDING: {filename}"
+            if label:
+                indicator_text += f" [{label}]"
+            self.recording_indicator.configure(text=indicator_text)
+            self.recording_indicator.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.S), pady=(0, 5))
+
+            # Update status
+            self.status_label.configure(text="Recording", fg="red")
+            self.filename_label.configure(text=filename, fg="red")
+
+            # Keep input enabled for continuous scanning
+            # User can scan next barcode to auto-stop-and-start
+            self.submit_button.configure(state=tk.NORMAL)
+            self.barcode_entry.configure(state=tk.NORMAL)
+            self.stop_button.configure(state=tk.NORMAL)
+
+        else:
+            # Hide recording indicator
+            self.recording_indicator.grid_forget()
+
+            # Update status
+            self.status_label.configure(text="Idle", fg="#6b7280")
+            self.filename_label.configure(text="-", fg="#6b7280")
+            self.duration_label.configure(text="00:00")
+
+            # Keep input enabled, disable stop button
+            self.submit_button.configure(state=tk.NORMAL)
+            self.barcode_entry.configure(state=tk.NORMAL)
+            self.stop_button.configure(state=tk.DISABLED)
+
+    def load_recordings(self):
+        """Load and display recent recordings."""
+        try:
+            recordings = self.db.get_recent_transactions(10)
+
+            self.recordings_text.configure(state=tk.NORMAL)
+            self.recordings_text.delete(1.0, tk.END)
+
+            if not recordings:
+                self.recordings_text.insert(tk.END, "No recordings yet.\n")
+            else:
+                for rec in recordings:
+                    start_time = datetime.fromisoformat(rec['start_time']).strftime('%Y-%m-%d %H:%M:%S')
+                    duration = rec['duration_seconds'] if rec['duration_seconds'] else 0
+                    file_size = rec['file_size_mb'] if rec['file_size_mb'] else 0
+                    label = rec.get('label') or 'Normal (Standard)'
+
+                    self.recordings_text.insert(tk.END, f"Barcode: {rec['barcode']}\n", "bold")
+                    self.recordings_text.insert(tk.END, f"  Label: {label}\n")
+                    self.recordings_text.insert(tk.END, f"  Started: {start_time}\n")
+                    self.recordings_text.insert(tk.END, f"  Duration: {duration}s | Size: {file_size:.2f}MB\n")
+                    self.recordings_text.insert(tk.END, f"  File: {rec['video_filename']}\n")
+                    self.recordings_text.insert(tk.END, "\n")
+
+            self.recordings_text.configure(state=tk.DISABLED)
+
+        except Exception as e:
+            logger.error(f"Error loading recordings: {e}")
+
+    def open_search_window(self):
+        """Open the search recordings window."""
+        SearchWindow(self.root, self.db, self)
+
+    def open_video(self, video_path):
+        """Open video file with default player."""
+        try:
+            # Normalize path separators for the current OS
+            video_path = os.path.normpath(video_path)
+
+            if not os.path.exists(video_path):
+                messagebox.showerror("Error", f"Video file not found:\n{video_path}")
+                return
+
+            system = platform.system()
+            if system == 'Windows':
+                os.startfile(video_path)
+            elif system == 'Darwin':  # macOS
+                subprocess.run(['open', video_path])
+            else:  # Linux
+                subprocess.run(['xdg-open', video_path])
+
+            logger.info(f"Opened video: {video_path}")
+        except Exception as e:
+            logger.error(f"Error opening video: {e}")
+            messagebox.showerror("Error", f"Failed to open video: {str(e)}")
+
+    def show_in_folder(self, video_path):
+        """Show video file in folder."""
+        try:
+            # Normalize path separators for the current OS
+            video_path = os.path.normpath(video_path)
+
+            if not os.path.exists(video_path):
+                messagebox.showerror("Error", f"Video file not found:\n{video_path}")
+                return
+
+            folder_path = os.path.dirname(video_path)
+            system = platform.system()
+
+            if system == 'Windows':
+                subprocess.run(['explorer', '/select,', video_path])
+            elif system == 'Darwin':  # macOS
+                subprocess.run(['open', '-R', video_path])
+            else:  # Linux
+                subprocess.run(['xdg-open', folder_path])
+
+            logger.info(f"Opened folder: {folder_path}")
+        except Exception as e:
+            logger.error(f"Error opening folder: {e}")
+            messagebox.showerror("Error", f"Failed to open folder: {str(e)}")
+
+    def set_status_bar(self, message, status_type="info"):
+        """Set status bar message."""
+        self.status_bar.configure(text=message)
+
+        # Auto-clear after 5 seconds
+        self.root.after(5000, lambda: self.status_bar.configure(text="Ready"))
+
+    def open_settings(self):
+        """Open settings dialog."""
+        try:
+            SettingsDialog(self.root, config.settings_manager, self)
+        except Exception as e:
+            logger.error(f"Error opening settings: {e}")
+            messagebox.showerror("Error", f"Failed to open settings: {str(e)}")
+
+    def on_closing(self):
+        """Handle application closing."""
+        if self.camera.is_recording():
+            if messagebox.askokcancel("Recording in Progress", "A recording is in progress. Stop and exit?"):
+                try:
+                    self.camera.stop_recording()
+                except:
+                    pass
+            else:
+                return
+
+        self.update_running = False
+        self.camera.cleanup()
+        self.root.destroy()
+        logger.info("Application closed")
+
+
+class SearchWindow:
+    """Beautiful search window for recordings."""
+
+    def __init__(self, parent, database, main_app):
+        """Initialize search window."""
+        self.db = database
+        self.main_app = main_app
+
+        # Create window
+        self.window = tk.Toplevel(parent)
+        self.window.title("🔍 Search Recordings - Ecom Video Tracker")
+        self.window.geometry("1000x700")
+        self.window.transient(parent)
+
+        # Center window
+        self.center_window()
+
+        # Setup UI
+        self.setup_ui()
+
+        # Bind keyboard shortcuts
+        self.window.bind('<Escape>', lambda e: self.window.destroy())
+        self.window.bind('<Control-f>', lambda e: self.barcode_entry.focus())
+        self.window.bind('<F5>', lambda e: self.perform_search())
+
+        # Focus on barcode entry
+        self.barcode_entry.focus()
+
+        logger.info("Search window opened")
+
+    def center_window(self):
+        """Center the window on screen."""
+        self.window.update_idletasks()
+        width = self.window.winfo_width()
+        height = self.window.winfo_height()
+        x = (self.window.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.window.winfo_screenheight() // 2) - (height // 2)
+        self.window.geometry(f'{width}x{height}+{x}+{y}')
+
+    def setup_ui(self):
+        """Setup the search window UI."""
+        # Configure style
+        style = ttk.Style()
+
+        # Main container with gradient-like background
+        main_frame = tk.Frame(self.window, bg='#f0f4f8')
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Header
+        self.create_header(main_frame)
+
+        # Search filters
+        self.create_filters(main_frame)
+
+        # Results area
+        self.create_results_area(main_frame)
+
+        # Footer with stats
+        self.create_footer(main_frame)
+
+    def create_header(self, parent):
+        """Create beautiful header."""
+        header = tk.Frame(parent, bg='#667eea', height=80)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
+
+        # Title
+        title_label = tk.Label(
+            header,
+            text="🔍 Search Recordings",
+            font=("Arial", 20, "bold"),
+            bg='#667eea',
+            fg='white'
+        )
+        title_label.pack(side=tk.LEFT, padx=20, pady=20)
+
+        # Close button
+        close_btn = tk.Button(
+            header,
+            text="✕",
+            font=("Arial", 16, "bold"),
+            bg='#5568d3',
+            fg='white',
+            bd=0,
+            cursor='hand2',
+            width=3,
+            command=self.window.destroy
+        )
+        close_btn.pack(side=tk.RIGHT, padx=20, pady=20)
+
+        # Keyboard shortcuts hint
+        hint_label = tk.Label(
+            header,
+            text="Press ESC to close | Ctrl+F to focus search | F5 to refresh",
+            font=("Arial", 9),
+            bg='#667eea',
+            fg='white'
+        )
+        hint_label.pack(side=tk.RIGHT, padx=20)
+
+    def create_filters(self, parent):
+        """Create search filters section."""
+        filters_frame = tk.Frame(parent, bg='white', pady=20)
+        filters_frame.pack(fill=tk.X, padx=20, pady=(20, 10))
+
+        # Filters container
+        container = tk.Frame(filters_frame, bg='white')
+        container.pack(fill=tk.X, padx=20)
+
+        # Row 1: Barcode, Label, and dates
+        row1 = tk.Frame(container, bg='white')
+        row1.pack(fill=tk.X, pady=(0, 15))
+
+        # Barcode
+        barcode_frame = tk.Frame(row1, bg='white')
+        barcode_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        tk.Label(
+            barcode_frame,
+            text="Barcode:",
+            font=("Arial", 10, "bold"),
+            bg='white',
+            fg='#333'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.barcode_entry = ttk.Entry(barcode_frame, font=("Arial", 11))
+        self.barcode_entry.pack(fill=tk.X)
+        self.barcode_entry.bind('<Return>', lambda e: self.perform_search())
+
+        # Label filter
+        label_frame = tk.Frame(row1, bg='white')
+        label_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        tk.Label(
+            label_frame,
+            text="Label:",
+            font=("Arial", 10, "bold"),
+            bg='white',
+            fg='#333'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.search_label_var = tk.StringVar(value="All Labels")
+        label_options = [
+            "All Labels",
+            "Return and Refund Unboxing",
+            "Return Parcel Unboxing",
+            "Normal (Standard)"
+        ]
+        self.search_label_combo = ttk.Combobox(
+            label_frame,
+            textvariable=self.search_label_var,
+            values=label_options,
+            state='readonly',
+            font=("Arial", 10)
+        )
+        self.search_label_combo.pack(fill=tk.X)
+
+        # Start Date with Calendar Picker
+        start_frame = tk.Frame(row1, bg='white')
+        start_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        tk.Label(
+            start_frame,
+            text="📅 Start Date:",
+            font=("Arial", 10, "bold"),
+            bg='white',
+            fg='#333'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.start_date_entry = DateEntry(
+            start_frame,
+            font=("Arial", 11),
+            background='#667eea',
+            foreground='white',
+            borderwidth=2,
+            date_pattern='yyyy-mm-dd',
+            showweeknumbers=False,
+            firstweekday='sunday',
+            year=datetime.now().year,
+            month=datetime.now().month,
+            day=datetime.now().day
+        )
+        self.start_date_entry.pack(fill=tk.X)
+        # Clear the date initially (optional filter)
+        self.start_date_entry.delete(0, tk.END)
+
+        # End Date with Calendar Picker
+        end_frame = tk.Frame(row1, bg='white')
+        end_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Label(
+            end_frame,
+            text="📅 End Date:",
+            font=("Arial", 10, "bold"),
+            bg='white',
+            fg='#333'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.end_date_entry = DateEntry(
+            end_frame,
+            font=("Arial", 11),
+            background='#667eea',
+            foreground='white',
+            borderwidth=2,
+            date_pattern='yyyy-mm-dd',
+            showweeknumbers=False,
+            firstweekday='sunday',
+            year=datetime.now().year,
+            month=datetime.now().month,
+            day=datetime.now().day
+        )
+        self.end_date_entry.pack(fill=tk.X)
+        # Clear the date initially (optional filter)
+        self.end_date_entry.delete(0, tk.END)
+
+        # Row 2: Sort and actions
+        row2 = tk.Frame(container, bg='white')
+        row2.pack(fill=tk.X)
+
+        # Sort by
+        sort_frame = tk.Frame(row2, bg='white')
+        sort_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+
+        tk.Label(
+            sort_frame,
+            text="Sort By:",
+            font=("Arial", 10, "bold"),
+            bg='white',
+            fg='#333'
+        ).pack(anchor=tk.W, pady=(0, 5))
+
+        self.sort_var = tk.StringVar(value="Date (Newest)")
+        sort_options = ["Date (Newest)", "Date (Oldest)", "Barcode", "Duration", "File Size"]
+        sort_combo = ttk.Combobox(sort_frame, textvariable=self.sort_var, values=sort_options, state='readonly', font=("Arial", 10))
+        sort_combo.pack(fill=tk.X)
+
+        # Buttons
+        btn_frame = tk.Frame(row2, bg='white')
+        btn_frame.pack(side=tk.LEFT, pady=(20, 0))
+
+        search_btn = tk.Button(
+            btn_frame,
+            text="🔍 Search",
+            font=("Arial", 11, "bold"),
+            bg='#667eea',
+            fg='white',
+            cursor='hand2',
+            bd=0,
+            padx=30,
+            pady=10,
+            command=self.perform_search
+        )
+        search_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        clear_btn = tk.Button(
+            btn_frame,
+            text="Clear",
+            font=("Arial", 11),
+            bg='#6b7280',
+            fg='white',
+            cursor='hand2',
+            bd=0,
+            padx=20,
+            pady=10,
+            command=self.clear_filters
+        )
+        clear_btn.pack(side=tk.LEFT)
+
+    def create_results_area(self, parent):
+        """Create results display area."""
+        results_frame = tk.Frame(parent, bg='#f0f4f8')
+        results_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
+
+        # Results header
+        results_header = tk.Frame(results_frame, bg='white', pady=10)
+        results_header.pack(fill=tk.X)
+
+        self.results_label = tk.Label(
+            results_header,
+            text="Enter search criteria and click Search",
+            font=("Arial", 11),
+            bg='white',
+            fg='#666'
+        )
+        self.results_label.pack(padx=20)
+
+        # Scrollable results area
+        canvas_frame = tk.Frame(results_frame, bg='#f0f4f8')
+        canvas_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Canvas with scrollbar
+        self.canvas = tk.Canvas(canvas_frame, bg='#f0f4f8', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = tk.Frame(self.canvas, bg='#f0f4f8')
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Mouse wheel scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def create_footer(self, parent):
+        """Create footer with stats."""
+        footer = tk.Frame(parent, bg='white', height=40)
+        footer.pack(fill=tk.X)
+        footer.pack_propagate(False)
+
+        self.stats_label = tk.Label(
+            footer,
+            text="Ready to search",
+            font=("Arial", 10),
+            bg='white',
+            fg='#666'
+        )
+        self.stats_label.pack(side=tk.LEFT, padx=20, pady=10)
+
+    def clear_placeholder(self, entry, placeholder):
+        """Clear placeholder text on focus."""
+        if entry.get() == placeholder:
+            entry.delete(0, tk.END)
+
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling."""
+        self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+    def clear_filters(self):
+        """Clear all search filters."""
+        self.barcode_entry.delete(0, tk.END)
+        # Clear date entries (DateEntry widgets)
+        self.start_date_entry.delete(0, tk.END)
+        self.end_date_entry.delete(0, tk.END)
+        self.search_label_var.set("All Labels")
+        self.sort_var.set("Date (Newest)")
+
+        # Clear results
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        self.results_label.config(text="Enter search criteria and click Search")
+        self.stats_label.config(text="Ready to search")
+
+    def perform_search(self):
+        """Perform the search."""
+        try:
+            # Get search parameters
+            barcode = self.barcode_entry.get().strip()
+            start_date = self.start_date_entry.get().strip()
+            end_date = self.end_date_entry.get().strip()
+            label_filter = self.search_label_var.get()
+            sort_option = self.sort_var.get()
+
+            # Validate dates (DateEntry returns empty string if cleared)
+            if not start_date:
+                start_date = None
+            if not end_date:
+                end_date = None
+
+            # Validate label filter
+            if label_filter == "All Labels":
+                label_filter = None
+
+            # Parse sort option
+            sort_by = "created_at"
+            sort_order = "DESC"
+
+            if sort_option == "Date (Oldest)":
+                sort_by = "created_at"
+                sort_order = "ASC"
+            elif sort_option == "Barcode":
+                sort_by = "barcode"
+                sort_order = "ASC"
+            elif sort_option == "Duration":
+                sort_by = "duration_seconds"
+                sort_order = "DESC"
+            elif sort_option == "File Size":
+                sort_by = "file_size_mb"
+                sort_order = "DESC"
+
+            # Perform search
+            results = self.db.advanced_search(
+                barcode=barcode if barcode else None,
+                start_date=start_date,
+                end_date=end_date,
+                label=label_filter,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                limit=100
+            )
+
+            # Clear previous results
+            for widget in self.scrollable_frame.winfo_children():
+                widget.destroy()
+
+            # Display results
+            recordings = results['results']
+            total = results['total']
+
+            if not recordings:
+                self.results_label.config(text="No recordings found")
+                self.stats_label.config(text="0 results")
+                return
+
+            self.results_label.config(text=f"Found {total} recording(s)")
+            self.stats_label.config(text=f"Showing {len(recordings)} of {total} results")
+
+            # Display each recording as a card
+            for idx, rec in enumerate(recordings):
+                self.create_result_card(rec, idx)
+
+        except Exception as e:
+            logger.error(f"Error performing search: {e}")
+            messagebox.showerror("Search Error", f"Failed to search: {str(e)}")
+
+    def create_result_card(self, recording, index):
+        """Create a beautiful card for each recording."""
+        # Card frame with shadow effect
+        card = tk.Frame(
+            self.scrollable_frame,
+            bg='white',
+            relief=tk.FLAT,
+            bd=0
+        )
+        card.pack(fill=tk.X, padx=10, pady=8)
+
+        # Add hover effect
+        card.bind("<Enter>", lambda e: card.config(bg='#f8f9fa'))
+        card.bind("<Leave>", lambda e: card.config(bg='white'))
+
+        # Inner padding
+        inner = tk.Frame(card, bg='white')
+        inner.pack(fill=tk.BOTH, padx=15, pady=15)
+
+        # Header row
+        header_row = tk.Frame(inner, bg='white')
+        header_row.pack(fill=tk.X, pady=(0, 10))
+
+        # Barcode (large and prominent)
+        barcode_label = tk.Label(
+            header_row,
+            text=f"📦 {recording['barcode']}",
+            font=("Arial", 14, "bold"),
+            bg='white',
+            fg='#667eea'
+        )
+        barcode_label.pack(side=tk.LEFT)
+
+        # Label badge - handle None values from database
+        label = recording.get('label') or 'Normal (Standard)'
+        label_colors = {
+            'Return and Refund Unboxing': '#dc2626',
+            'Return Parcel Unboxing': '#f59e0b',
+            'Normal (Standard)': '#10b981'
+        }
+        badge_color = label_colors.get(label, '#10b981')
+
+        label_badge = tk.Label(
+            header_row,
+            text=label,
+            font=("Arial", 9),
+            bg=badge_color,
+            fg='white',
+            padx=8,
+            pady=2
+        )
+        label_badge.pack(side=tk.RIGHT)
+
+        # Details row
+        details_row = tk.Frame(inner, bg='white')
+        details_row.pack(fill=tk.X, pady=(0, 10))
+
+        # Format details
+        start_time = datetime.fromisoformat(recording['start_time']).strftime('%Y-%m-%d %H:%M:%S')
+        duration = recording['duration_seconds'] if recording['duration_seconds'] else 0
+        file_size = recording['file_size_mb'] if recording['file_size_mb'] else 0
+
+        details_text = f"📅 {start_time}   |   ⏱️ {duration}s   |   💾 {file_size:.2f}MB"
+
+        details_label = tk.Label(
+            details_row,
+            text=details_text,
+            font=("Arial", 10),
+            bg='white',
+            fg='#666'
+        )
+        details_label.pack(side=tk.LEFT)
+
+        # Filename row
+        filename_label = tk.Label(
+            inner,
+            text=f"📄 {recording['video_filename']}",
+            font=("Courier", 9),
+            bg='white',
+            fg='#888'
+        )
+        filename_label.pack(anchor=tk.W, pady=(0, 10))
+
+        # Action buttons
+        actions_frame = tk.Frame(inner, bg='white')
+        actions_frame.pack(fill=tk.X)
+
+        # Build video path - check both new (with label folder) and old (without) paths
+        date_folder = datetime.fromisoformat(recording['start_time']).strftime('%Y-%m-%d')
+        label_folder_map = {
+            "Return and Refund Unboxing": "Return and Refund",
+            "Return Parcel Unboxing": "Return Parcel",
+            "Normal (Standard)": "Normal"
+        }
+        label_folder = label_folder_map.get(label, "Normal")
+
+        # Try new path with label folder first
+        video_path = os.path.join(config.VIDEO_STORAGE_PATH, date_folder, label_folder, recording['video_filename'])
+
+        # Fall back to old path without label folder if not found
+        if not os.path.exists(video_path):
+            video_path = os.path.join(config.VIDEO_STORAGE_PATH, date_folder, recording['video_filename'])
+
+        # Play button
+        play_btn = tk.Button(
+            actions_frame,
+            text="▶️ Play Video",
+            font=("Arial", 10, "bold"),
+            bg='#667eea',
+            fg='white',
+            cursor='hand2',
+            bd=0,
+            padx=15,
+            pady=8,
+            command=lambda vp=video_path: self.main_app.open_video(vp)
+        )
+        play_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Folder button
+        folder_btn = tk.Button(
+            actions_frame,
+            text="📁 Show in Folder",
+            font=("Arial", 10),
+            bg='#6b7280',
+            fg='white',
+            cursor='hand2',
+            bd=0,
+            padx=15,
+            pady=8,
+            command=lambda vp=video_path: self.main_app.show_in_folder(vp)
+        )
+        folder_btn.pack(side=tk.LEFT)
+
+        # Separator line
+        separator = tk.Frame(self.scrollable_frame, bg='#e5e7eb', height=1)
+        separator.pack(fill=tk.X, padx=10)
+
+
+class SettingsDialog:
+    """Settings dialog window."""
+
+    RESOLUTION_PRESETS = [
+        ("640x480", (640, 480)),
+        ("1280x720 (HD)", (1280, 720)),
+        ("1920x1080 (Full HD)", (1920, 1080)),
+        ("2560x1440 (2K)", (2560, 1440)),
+        ("3840x2160 (4K)", (3840, 2160))
+    ]
+
+    CODEC_OPTIONS = [
+        ("MP4V (Recommended)", "mp4v"),
+        ("H264", "avc1"),
+        ("XVID", "XVID"),
+        ("MJPEG", "MJPG")
+    ]
+
+    FPS_OPTIONS = [15, 24, 30, 60]
+
+    def __init__(self, parent, settings_manager: SettingsManager, main_app):
+        """Initialize settings dialog."""
+        self.settings_manager = settings_manager
+        self.main_app = main_app
+
+        # Create dialog window
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Settings - Ecom Video Tracker")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        # Load current settings
+        self.current_settings = settings_manager.get_all()
+
+        # Setup UI
+        self.setup_ui()
+
+        # Auto-size to content and center dialog
+        self.dialog.update_idletasks()
+        width = self.dialog.winfo_reqwidth()
+        height = self.dialog.winfo_reqheight()
+        x = (self.dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (height // 2)
+        self.dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+    def setup_ui(self):
+        """Setup dialog UI."""
+        # Main container
+        main_frame = ttk.Frame(self.dialog, padding="20")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        main_frame.columnconfigure(0, weight=1)
+
+        # Title
+        title_label = ttk.Label(
+            main_frame,
+            text="Application Settings",
+            font=("Arial", 14, "bold")
+        )
+        title_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 20))
+
+        # Notebook for tabs
+        notebook = ttk.Notebook(main_frame)
+        notebook.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 20))
+
+        # Create tabs
+        self.create_video_tab(notebook)
+        self.create_camera_tab(notebook)
+        self.create_storage_tab(notebook)
+        self.create_app_tab(notebook)
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+        button_frame.columnconfigure(2, weight=1)
+
+        reset_btn = ttk.Button(
+            button_frame,
+            text="Reset to Defaults",
+            command=self.reset_defaults
+        )
+        reset_btn.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+
+        cancel_btn = ttk.Button(
+            button_frame,
+            text="Cancel",
+            command=self.dialog.destroy
+        )
+        cancel_btn.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=5)
+
+        save_btn = ttk.Button(
+            button_frame,
+            text="Save & Apply",
+            command=self.save_settings
+        )
+        save_btn.grid(row=0, column=2, sticky=(tk.W, tk.E), padx=(5, 0))
+
+    def create_video_tab(self, notebook):
+        """Create video settings tab."""
+        tab = ttk.Frame(notebook, padding="10")
+        notebook.add(tab, text="Video")
+
+        # Resolution
+        ttk.Label(tab, text="Resolution:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.resolution_var = tk.StringVar()
+        current_res = self.current_settings['video']['resolution_width'], \
+                     self.current_settings['video']['resolution_height']
+
+        # Find matching preset
+        selected_preset = "1280x720 (HD)"
+        for name, res in self.RESOLUTION_PRESETS:
+            if res == current_res:
+                selected_preset = name
+                break
+
+        self.resolution_var.set(selected_preset)
+
+        resolution_combo = ttk.Combobox(
+            tab,
+            textvariable=self.resolution_var,
+            values=[name for name, _ in self.RESOLUTION_PRESETS],
+            state='readonly',
+            width=28
+        )
+        resolution_combo.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # FPS
+        ttk.Label(tab, text="FPS (Frames Per Second):", font=("Arial", 10, "bold")).grid(
+            row=2, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.fps_var = tk.IntVar(value=self.current_settings['video']['fps'])
+
+        fps_frame = ttk.Frame(tab)
+        fps_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        for fps in self.FPS_OPTIONS:
+            rb = ttk.Radiobutton(
+                fps_frame,
+                text=f"{fps} FPS",
+                variable=self.fps_var,
+                value=fps
+            )
+            rb.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Codec
+        ttk.Label(tab, text="Video Codec:", font=("Arial", 10, "bold")).grid(
+            row=4, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.codec_var = tk.StringVar()
+        current_codec = self.current_settings['video']['codec']
+
+        # Find matching codec
+        selected_codec = "MP4V (Recommended)"
+        for name, codec in self.CODEC_OPTIONS:
+            if codec == current_codec:
+                selected_codec = name
+                break
+
+        self.codec_var.set(selected_codec)
+
+        codec_combo = ttk.Combobox(
+            tab,
+            textvariable=self.codec_var,
+            values=[name for name, _ in self.CODEC_OPTIONS],
+            state='readonly',
+            width=28
+        )
+        codec_combo.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # Info text
+        info_label = ttk.Label(
+            tab,
+            text="Note: Higher resolution and FPS require more storage.",
+            font=("Arial", 9, "italic"),
+            foreground="gray"
+        )
+        info_label.grid(row=6, column=0, sticky=tk.W, pady=(5, 0))
+
+    def create_camera_tab(self, notebook):
+        """Create camera settings tab."""
+        tab = ttk.Frame(notebook, padding="10")
+        notebook.add(tab, text="Camera")
+
+        # Camera selection
+        ttk.Label(tab, text="Select Camera:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        # Get available cameras
+        self.available_cameras = get_available_cameras()
+
+        camera_frame = ttk.Frame(tab)
+        camera_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        camera_frame.columnconfigure(0, weight=1)
+
+        # Create camera selection dropdown
+        self.camera_var = tk.StringVar()
+
+        # Build camera options
+        camera_options = []
+        current_index = self.current_settings['camera']['index']
+        selected_option = None
+
+        for cam in self.available_cameras:
+            status = "✓" if cam['working'] else "✗"
+            option = f"{status} {cam['name']} (Index {cam['index']}) - {cam['resolution']}"
+            camera_options.append(option)
+
+            if cam['index'] == current_index:
+                selected_option = option
+
+        if selected_option is None and camera_options:
+            selected_option = camera_options[0]
+
+        self.camera_var.set(selected_option if selected_option else "No cameras detected")
+
+        camera_combo = ttk.Combobox(
+            camera_frame,
+            textvariable=self.camera_var,
+            values=camera_options,
+            state='readonly',
+            width=60
+        )
+        camera_combo.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # Refresh cameras button
+        refresh_btn = ttk.Button(
+            camera_frame,
+            text="🔄 Refresh Cameras",
+            command=self.refresh_cameras
+        )
+        refresh_btn.grid(row=1, column=0, sticky=tk.W)
+
+        # Camera info
+        info_label = ttk.Label(
+            tab,
+            text="✓ = Working  |  ✗ = Not responding\nClick 'Refresh' if camera not shown.",
+            font=("Arial", 9),
+            foreground="gray",
+            justify=tk.LEFT
+        )
+        info_label.grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+
+    def create_storage_tab(self, notebook):
+        """Create storage settings tab."""
+        tab = ttk.Frame(notebook, padding="10")
+        notebook.add(tab, text="Storage")
+
+        # Video storage path
+        ttk.Label(tab, text="Video Storage Path:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        video_path_frame = ttk.Frame(tab)
+        video_path_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        video_path_frame.columnconfigure(0, weight=1)
+
+        self.video_path_var = tk.StringVar(value=self.current_settings['storage']['video_path'])
+
+        video_path_entry = ttk.Entry(video_path_frame, textvariable=self.video_path_var, width=35)
+        video_path_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+
+        video_browse_btn = ttk.Button(
+            video_path_frame,
+            text="Browse",
+            command=lambda: self.browse_folder(self.video_path_var)
+        )
+        video_browse_btn.grid(row=0, column=1)
+
+        # Database path
+        ttk.Label(tab, text="Database Path:", font=("Arial", 10, "bold")).grid(
+            row=2, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        db_path_frame = ttk.Frame(tab)
+        db_path_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        db_path_frame.columnconfigure(0, weight=1)
+
+        self.db_path_var = tk.StringVar(value=self.current_settings['storage']['database_path'])
+
+        db_path_entry = ttk.Entry(db_path_frame, textvariable=self.db_path_var, width=35)
+        db_path_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+
+        db_browse_btn = ttk.Button(
+            db_path_frame,
+            text="Browse",
+            command=lambda: self.browse_file(self.db_path_var, [("Database", "*.db"), ("All files", "*.*")])
+        )
+        db_browse_btn.grid(row=0, column=1)
+
+        # Log path
+        ttk.Label(tab, text="Log Storage Path:", font=("Arial", 10, "bold")).grid(
+            row=4, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        log_path_frame = ttk.Frame(tab)
+        log_path_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        log_path_frame.columnconfigure(0, weight=1)
+
+        self.log_path_var = tk.StringVar(value=self.current_settings['storage']['log_path'])
+
+        log_path_entry = ttk.Entry(log_path_frame, textvariable=self.log_path_var, width=35)
+        log_path_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+
+        log_browse_btn = ttk.Button(
+            log_path_frame,
+            text="Browse",
+            command=lambda: self.browse_folder(self.log_path_var)
+        )
+        log_browse_btn.grid(row=0, column=1)
+
+        # Info text
+        info_label = ttk.Label(
+            tab,
+            text="Use relative or absolute paths. Restart app after changes.",
+            font=("Arial", 9, "italic"),
+            foreground="gray"
+        )
+        info_label.grid(row=6, column=0, sticky=tk.W, pady=(5, 0))
+
+    def create_app_tab(self, notebook):
+        """Create application settings tab."""
+        tab = ttk.Frame(notebook, padding="10")
+        notebook.add(tab, text="Web App")
+
+        # Flask host
+        ttk.Label(tab, text="Flask Host:", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.flask_host_var = tk.StringVar(value=self.current_settings['app']['flask_host'])
+
+        host_entry = ttk.Entry(tab, textvariable=self.flask_host_var, width=25)
+        host_entry.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # Flask port
+        ttk.Label(tab, text="Flask Port:", font=("Arial", 10, "bold")).grid(
+            row=2, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.flask_port_var = tk.IntVar(value=self.current_settings['app']['flask_port'])
+
+        port_spinbox = ttk.Spinbox(
+            tab,
+            from_=1024,
+            to=65535,
+            textvariable=self.flask_port_var,
+            width=25
+        )
+        port_spinbox.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        # Debug mode
+        self.debug_mode_var = tk.BooleanVar(value=self.current_settings['app']['debug_mode'])
+
+        debug_check = ttk.Checkbutton(
+            tab,
+            text="Enable Debug Mode",
+            variable=self.debug_mode_var
+        )
+        debug_check.grid(row=4, column=0, sticky=tk.W, pady=(0, 10))
+
+        # Info text
+        info_label = ttk.Label(
+            tab,
+            text="0.0.0.0 = network access | 127.0.0.1 = localhost only",
+            font=("Arial", 9),
+            foreground="gray"
+        )
+        info_label.grid(row=5, column=0, sticky=tk.W, pady=(5, 0))
+
+    def browse_folder(self, var):
+        """Browse for folder."""
+        folder = filedialog.askdirectory()
+        if folder:
+            var.set(folder)
+
+    def browse_file(self, var, filetypes):
+        """Browse for file."""
+        filename = filedialog.askopenfilename(filetypes=filetypes)
+        if filename:
+            var.set(filename)
+
+    def refresh_cameras(self):
+        """Refresh the list of available cameras."""
+        try:
+            # Re-enumerate cameras
+            self.available_cameras = get_available_cameras()
+
+            # Rebuild camera options
+            camera_options = []
+            current_selection = self.camera_var.get()
+            current_index = None
+
+            # Try to extract current index from selection
+            if "(Index " in current_selection:
+                try:
+                    start = current_selection.index("(Index ") + 7
+                    end = current_selection.index(")", start)
+                    current_index = int(current_selection[start:end])
+                except:
+                    pass
+
+            selected_option = None
+
+            for cam in self.available_cameras:
+                status = "✓" if cam['working'] else "✗"
+                option = f"{status} {cam['name']} (Index {cam['index']}) - {cam['resolution']}"
+                camera_options.append(option)
+
+                if current_index is not None and cam['index'] == current_index:
+                    selected_option = option
+
+            if selected_option is None and camera_options:
+                selected_option = camera_options[0]
+
+            # Update combobox
+            for widget in self.dialog.winfo_children():
+                if isinstance(widget, ttk.Notebook):
+                    notebook = widget
+                    camera_tab = notebook.nametowidget(notebook.tabs()[1])  # Camera tab is second
+                    for child in camera_tab.winfo_children():
+                        if isinstance(child, ttk.Frame):
+                            for subchild in child.winfo_children():
+                                if isinstance(subchild, ttk.Combobox):
+                                    subchild['values'] = camera_options
+                                    self.camera_var.set(selected_option if selected_option else "No cameras detected")
+                                    break
+
+            messagebox.showinfo("Cameras Refreshed", f"Found {len(self.available_cameras)} camera(s)")
+
+        except Exception as e:
+            logger.error(f"Error refreshing cameras: {e}")
+            messagebox.showerror("Error", f"Failed to refresh cameras: {str(e)}")
+
+    def reset_defaults(self):
+        """Reset settings to defaults."""
+        if messagebox.askyesno("Reset Settings", "Reset all settings to default values?"):
+            self.settings_manager.reset_to_defaults()
+            self.dialog.destroy()
+            messagebox.showinfo("Settings Reset", "Settings have been reset to defaults.\nThe camera will restart automatically.")
+
+    def save_settings(self):
+        """Save settings."""
+        try:
+            # Parse resolution
+            selected_res = self.resolution_var.get()
+            width, height = 1280, 720
+            for name, res in self.RESOLUTION_PRESETS:
+                if name == selected_res:
+                    width, height = res
+                    break
+
+            # Parse codec
+            selected_codec = self.codec_var.get()
+            codec = "mp4v"
+            for name, c in self.CODEC_OPTIONS:
+                if name == selected_codec:
+                    codec = c
+                    break
+
+            # Parse camera index from selection
+            camera_index = 0
+            camera_selection = self.camera_var.get()
+            if "(Index " in camera_selection:
+                try:
+                    start = camera_selection.index("(Index ") + 7
+                    end = camera_selection.index(")", start)
+                    camera_index = int(camera_selection[start:end])
+                except:
+                    logger.warning("Could not parse camera index, using 0")
+
+            # Update video settings
+            self.settings_manager.update_category('video', {
+                'resolution_width': width,
+                'resolution_height': height,
+                'fps': self.fps_var.get(),
+                'codec': codec
+            })
+
+            # Update camera settings
+            self.settings_manager.update_category('camera', {
+                'index': camera_index
+            })
+
+            # Update storage settings
+            self.settings_manager.update_category('storage', {
+                'video_path': self.video_path_var.get(),
+                'database_path': self.db_path_var.get(),
+                'log_path': self.log_path_var.get()
+            })
+
+            # Update app settings
+            self.settings_manager.update_category('app', {
+                'flask_host': self.flask_host_var.get(),
+                'flask_port': self.flask_port_var.get(),
+                'debug_mode': self.debug_mode_var.get()
+            })
+
+            # Save to file
+            if self.settings_manager.save_settings():
+                self.dialog.destroy()
+
+                # Reinitialize camera with new settings
+                try:
+                    self.main_app.camera.reinitialize()
+                    messagebox.showinfo(
+                        "Settings Saved",
+                        "Settings have been saved successfully.\n\n"
+                        "Camera has been restarted with new settings."
+                    )
+                except Exception as cam_error:
+                    logger.error(f"Error reinitializing camera: {cam_error}")
+                    messagebox.showwarning(
+                        "Settings Saved",
+                        "Settings have been saved successfully.\n\n"
+                        "However, the camera could not be restarted automatically.\n"
+                        "Please restart the application manually."
+                    )
+            else:
+                messagebox.showerror("Error", "Failed to save settings")
+
+        except Exception as e:
+            logger.error(f"Error saving settings: {e}")
+            messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
+
+
+def main():
+    """Main entry point."""
+    root = tk.Tk()
+    app = EcomVideoTrackerApp(root)
+    root.mainloop()
+
+
+if __name__ == '__main__':
+    main()
