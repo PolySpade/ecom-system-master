@@ -31,6 +31,13 @@ class SettingsManager:
             'flask_host': '127.0.0.1',
             'flask_port': 5000,
             'debug_mode': False
+        },
+        'compression': {
+            'enabled': True,
+            'codec': 'h264',       # 'h264' or 'h265'
+            'crf': 23,             # 18-35 (lower = better quality)
+            'preset': 'medium',    # ultrafast/fast/medium/slow
+            'delete_original': True  # Delete original after successful compression
         }
     }
 

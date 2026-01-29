@@ -82,6 +82,15 @@ function setupEventListeners() {
         tab.addEventListener('click', () => switchSettingsTab(tab.dataset.tab));
     });
 
+    // CRF slider value display
+    const crfSlider = document.getElementById('compressionCrfSlider');
+    const crfValue = document.getElementById('crfValue');
+    if (crfSlider && crfValue) {
+        crfSlider.addEventListener('input', () => {
+            crfValue.textContent = crfSlider.value;
+        });
+    }
+
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
         // ESC to close search modal
@@ -571,6 +580,9 @@ async function openSettingsModal() {
         // Load available cameras
         await loadCameras(settings.camera.index);
 
+        // Check FFmpeg status
+        checkFfmpegStatus();
+
         // Populate form fields
         populateSettingsForm(settings);
 
@@ -651,6 +663,28 @@ async function refreshCameras() {
     showStatus('Cameras refreshed', 'success');
 }
 
+// Check FFmpeg status
+async function checkFfmpegStatus() {
+    const statusElement = document.getElementById('ffmpegStatus');
+    if (!statusElement) return;
+
+    statusElement.innerHTML = '<span class="status-checking">Checking FFmpeg...</span>';
+
+    try {
+        const response = await fetch('/api/compression/check-ffmpeg');
+        const data = await response.json();
+
+        if (data.available) {
+            statusElement.innerHTML = `<span class="status-available">✓ ${data.message}</span>`;
+        } else {
+            statusElement.innerHTML = `<span class="status-unavailable">✗ ${data.message}</span>`;
+        }
+    } catch (error) {
+        console.error('Error checking FFmpeg:', error);
+        statusElement.innerHTML = '<span class="status-unavailable">✗ Error checking FFmpeg status</span>';
+    }
+}
+
 // Populate settings form
 function populateSettingsForm(settings) {
     // Video settings
@@ -661,6 +695,15 @@ function populateSettingsForm(settings) {
 
     // Camera settings - already loaded by loadCameras()
     // document.getElementById('cameraSelect').value is set in loadCameras()
+
+    // Compression settings
+    const compression = settings.compression || {};
+    document.getElementById('compressionEnabled').checked = compression.enabled !== false;
+    document.getElementById('compressionCodecSelect').value = compression.codec || 'h264';
+    document.getElementById('compressionCrfSlider').value = compression.crf || 23;
+    document.getElementById('crfValue').textContent = compression.crf || 23;
+    document.getElementById('compressionPresetSelect').value = compression.preset || 'medium';
+    document.getElementById('deleteOriginalCheck').checked = compression.delete_original !== false;
 
     // Storage settings
     document.getElementById('videoPathInput').value = settings.storage.video_path;
@@ -687,6 +730,13 @@ async function saveSettings() {
             },
             camera: {
                 index: parseInt(document.getElementById('cameraSelect').value)
+            },
+            compression: {
+                enabled: document.getElementById('compressionEnabled').checked,
+                codec: document.getElementById('compressionCodecSelect').value,
+                crf: parseInt(document.getElementById('compressionCrfSlider').value),
+                preset: document.getElementById('compressionPresetSelect').value,
+                delete_original: document.getElementById('deleteOriginalCheck').checked
             },
             storage: {
                 video_path: document.getElementById('videoPathInput').value,

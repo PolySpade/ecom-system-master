@@ -6,12 +6,12 @@ import os
 import platform
 from datetime import datetime
 from typing import Optional
+from collections import deque
 import config
 
 logger = logging.getLogger(__name__)
 
-# Suppress OpenCV MSMF warnings on Windows
-os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+# MSMF (Media Foundation) is preferred on Windows for lower latency
 
 
 class CameraHandler:
@@ -27,16 +27,31 @@ class CameraHandler:
         self.current_barcode = None
         self.current_label_folder = None
         self.frame_count = 0
+
+        # Frame capture thread variables
+        self.capture_thread = None
+        self.capture_running = False
+        self.latest_frame = None
+        self.frame_lock = threading.Lock()
+
+        # Frame buffer for recording (thread-safe queue)
+        self.frame_buffer = deque(maxlen=60)  # Buffer up to 2 seconds at 30fps
+        self.buffer_lock = threading.Lock()
+
+        # Actual FPS tracking
+        self.actual_fps = config.VIDEO_FPS
+        self.fps_sample_times = deque(maxlen=30)  # Track last 30 frame times
+
         self.initialize_camera()
 
     def initialize_camera(self):
         """Initialize the camera."""
         try:
-            # Use DirectShow on Windows to avoid MSMF errors
-            # DirectShow is more stable and compatible with virtual cameras
+            # Use MSMF (Media Foundation) on Windows for lower latency
+            # MSMF is Microsoft's modern camera API with better performance than DirectShow
             if platform.system() == 'Windows':
-                self.camera = cv2.VideoCapture(config.CAMERA_INDEX, cv2.CAP_DSHOW)
-                logger.info(f"Initializing camera {config.CAMERA_INDEX} with DirectShow backend")
+                self.camera = cv2.VideoCapture(config.CAMERA_INDEX, cv2.CAP_MSMF)
+                logger.info(f"Initializing camera {config.CAMERA_INDEX} with MSMF backend")
             else:
                 self.camera = cv2.VideoCapture(config.CAMERA_INDEX)
                 logger.info(f"Initializing camera {config.CAMERA_INDEX} with default backend")
@@ -51,6 +66,9 @@ class CameraHandler:
             # Set FPS
             self.camera.set(cv2.CAP_PROP_FPS, config.VIDEO_FPS)
 
+            # Set buffer size to minimum to reduce latency
+            self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
             # Warm up camera
             time.sleep(config.CAMERA_WARMUP_TIME)
 
@@ -58,39 +76,136 @@ class CameraHandler:
             ret, frame = self.camera.read()
             if not ret or frame is None:
                 logger.warning("Camera opened but cannot read frames")
+            else:
+                self.latest_frame = frame
+
+            # Start the background capture thread
+            self._start_capture_thread()
 
             logger.info(f"Camera initialized successfully (Resolution: {config.VIDEO_RESOLUTION}, FPS: {config.VIDEO_FPS})")
         except Exception as e:
             logger.error(f"Error initializing camera: {e}")
             raise
 
-    def get_frame(self):
-        """Get the current frame from the camera."""
-        with self.lock:
+    def _start_capture_thread(self):
+        """Start the background frame capture thread."""
+        if self.capture_thread is not None and self.capture_thread.is_alive():
+            return
+
+        self.capture_running = True
+        self.capture_thread = threading.Thread(target=self._capture_frames, daemon=True)
+        self.capture_thread.start()
+        logger.info("Frame capture thread started")
+
+    def _stop_capture_thread(self):
+        """Stop the background frame capture thread."""
+        self.capture_running = False
+        if self.capture_thread is not None:
+            self.capture_thread.join(timeout=2.0)
+            self.capture_thread = None
+        logger.info("Frame capture thread stopped")
+
+    def _capture_frames(self):
+        """Background thread that continuously captures frames from the camera."""
+        while self.capture_running:
             if self.camera is None or not self.camera.isOpened():
-                return None
-
-            success, frame = self.camera.read()
-            if success:
-                self.frame = frame
-                return frame
-            return None
-
-    def generate_frames(self):
-        """Generator function for streaming frames to the web UI."""
-        while True:
-            frame = self.get_frame()
-            if frame is None:
+                time.sleep(0.01)
                 continue
 
-            # Encode frame as JPEG
-            ret, buffer = cv2.imencode('.jpg', frame)
+            try:
+                ret, frame = self.camera.read()
+                if ret and frame is not None:
+                    current_time = time.time()
+
+                    # Update the latest frame for display (thread-safe)
+                    with self.frame_lock:
+                        self.latest_frame = frame
+
+                    # Track FPS
+                    self.fps_sample_times.append(current_time)
+                    if len(self.fps_sample_times) >= 2:
+                        elapsed = self.fps_sample_times[-1] - self.fps_sample_times[0]
+                        if elapsed > 0:
+                            self.actual_fps = (len(self.fps_sample_times) - 1) / elapsed
+
+                    # Add to recording buffer if recording
+                    if self.recording:
+                        with self.buffer_lock:
+                            self.frame_buffer.append((frame.copy(), current_time))
+                else:
+                    # Small sleep to avoid spinning on failed reads
+                    time.sleep(0.001)
+
+            except Exception as e:
+                logger.error(f"Error capturing frame: {e}")
+                time.sleep(0.01)
+
+    def get_frame(self):
+        """Get the current frame from the camera (non-blocking, returns cached frame)."""
+        with self.frame_lock:
+            if self.latest_frame is not None:
+                return self.latest_frame.copy()
+            return None
+
+    def get_preview_frame(self, max_width: int = 640, max_height: int = 480):
+        """
+        Get a downscaled preview frame for display (reduces lag).
+
+        Args:
+            max_width: Maximum width for preview
+            max_height: Maximum height for preview
+
+        Returns:
+            Downscaled frame for preview display
+        """
+        # Get frame reference quickly under lock
+        with self.frame_lock:
+            if self.latest_frame is None:
+                return None
+            # Copy frame data while under lock (fast operation)
+            frame = self.latest_frame
+
+        # Do expensive resize operation outside the lock
+        height, width = frame.shape[:2]
+
+        # Calculate scale to fit within max dimensions while preserving aspect ratio
+        scale_w = max_width / width
+        scale_h = max_height / height
+        scale = min(scale_w, scale_h, 1.0)  # Don't upscale
+
+        if scale < 1.0:
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            # Use INTER_NEAREST for fastest downscaling (no interpolation)
+            return cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+
+        return frame.copy()
+
+    def get_actual_fps(self):
+        """Get the actual measured FPS of the camera."""
+        return self.actual_fps
+
+    def generate_frames(self):
+        """Generator function for streaming frames to the web UI (uses preview for performance)."""
+        while True:
+            # Use preview frame for web streaming (lighter weight)
+            frame = self.get_preview_frame(max_width=800, max_height=600)
+            if frame is None:
+                time.sleep(0.01)  # Wait a bit if no frame available
+                continue
+
+            # Encode frame as JPEG with reduced quality for faster streaming
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, 70]
+            ret, buffer = cv2.imencode('.jpg', frame, encode_params)
             if not ret:
                 continue
 
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+
+            # Small delay to control stream rate (~30 FPS max)
+            time.sleep(0.033)
 
     def _get_label_folder_name(self, label: str) -> str:
         """Convert label to folder name."""
@@ -134,12 +249,23 @@ class CameraHandler:
                 self.current_label_folder = label_folder
                 self.frame_count = 0
 
-                # Initialize video writer
+                # Clear the frame buffer before starting
+                with self.buffer_lock:
+                    self.frame_buffer.clear()
+
+                # Use actual measured FPS for the video file to ensure correct playback speed
+                # Fall back to config FPS if we don't have enough samples yet
+                recording_fps = self.actual_fps if self.actual_fps > 0 else config.VIDEO_FPS
+                # Clamp FPS to reasonable range
+                recording_fps = max(10, min(60, recording_fps))
+                self.recording_fps = recording_fps
+
+                # Initialize video writer with actual FPS
                 fourcc = cv2.VideoWriter_fourcc(*config.VIDEO_CODEC)
                 self.video_writer = cv2.VideoWriter(
                     video_path,
                     fourcc,
-                    config.VIDEO_FPS,
+                    recording_fps,
                     config.VIDEO_RESOLUTION
                 )
 
@@ -150,10 +276,10 @@ class CameraHandler:
                 self.recording_start_time = time.time()
 
                 # Start recording thread
-                self.recording_thread = threading.Thread(target=self._record_frames)
+                self.recording_thread = threading.Thread(target=self._record_frames, daemon=True)
                 self.recording_thread.start()
 
-                logger.info(f"Started recording: {self.current_filename} (Label: {label})")
+                logger.info(f"Started recording: {self.current_filename} (Label: {label}, FPS: {recording_fps:.1f})")
                 return self.current_filename
 
             except Exception as e:
@@ -206,37 +332,31 @@ class CameraHandler:
         return frame
 
     def _record_frames(self):
-        """Internal method to continuously record frames with proper timing."""
-        frame_duration = 1.0 / config.VIDEO_FPS
-        next_frame_time = time.time()
-
+        """Internal method to continuously record frames from the buffer."""
         while self.recording:
-            current_time = time.time()
+            frame_to_write = None
 
-            # Wait until it's time for the next frame
-            if current_time < next_frame_time:
-                sleep_time = next_frame_time - current_time
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+            # Get frame from buffer
+            with self.buffer_lock:
+                if self.frame_buffer:
+                    frame_to_write, _ = self.frame_buffer.popleft()
 
-            frame = self.get_frame()
-            if frame is not None and self.video_writer is not None:
-                # Resize frame to match video resolution if needed
-                if frame.shape[1] != config.VIDEO_RESOLUTION[0] or frame.shape[0] != config.VIDEO_RESOLUTION[1]:
-                    frame = cv2.resize(frame, config.VIDEO_RESOLUTION)
+            if frame_to_write is not None and self.video_writer is not None:
+                try:
+                    # Resize frame to match video resolution if needed
+                    if frame_to_write.shape[1] != config.VIDEO_RESOLUTION[0] or frame_to_write.shape[0] != config.VIDEO_RESOLUTION[1]:
+                        frame_to_write = cv2.resize(frame_to_write, config.VIDEO_RESOLUTION)
 
-                # Add timestamp watermark
-                frame = self._add_timestamp_watermark(frame)
+                    # Add timestamp watermark
+                    frame_to_write = self._add_timestamp_watermark(frame_to_write)
 
-                self.video_writer.write(frame)
-                self.frame_count += 1
-
-            # Schedule next frame
-            next_frame_time += frame_duration
-
-            # If we've fallen behind, reset timing to avoid catching up rapidly
-            if time.time() > next_frame_time + frame_duration:
-                next_frame_time = time.time()
+                    self.video_writer.write(frame_to_write)
+                    self.frame_count += 1
+                except Exception as e:
+                    logger.error(f"Error writing frame: {e}")
+            else:
+                # No frame in buffer, sleep briefly to avoid spinning
+                time.sleep(0.005)
 
     def stop_recording(self) -> dict:
         """
@@ -255,6 +375,17 @@ class CameraHandler:
                 # Wait for recording thread to finish
                 if hasattr(self, 'recording_thread') and self.recording_thread.is_alive():
                     self.recording_thread.join(timeout=2.0)
+
+                # Write any remaining frames in the buffer
+                if self.video_writer is not None:
+                    with self.buffer_lock:
+                        while self.frame_buffer:
+                            frame, _ = self.frame_buffer.popleft()
+                            if frame.shape[1] != config.VIDEO_RESOLUTION[0] or frame.shape[0] != config.VIDEO_RESOLUTION[1]:
+                                frame = cv2.resize(frame, config.VIDEO_RESOLUTION)
+                            frame = self._add_timestamp_watermark(frame)
+                            self.video_writer.write(frame)
+                            self.frame_count += 1
 
                 # Release video writer
                 if self.video_writer is not None:
@@ -275,14 +406,19 @@ class CameraHandler:
                 )
                 file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
 
+                # Get actual recorded FPS
+                recorded_fps = getattr(self, 'recording_fps', config.VIDEO_FPS)
+
                 result = {
                     'filename': self.current_filename,
                     'duration': duration,
                     'file_size_mb': round(file_size_mb, 2),
-                    'label_folder': label_folder
+                    'label_folder': label_folder,
+                    'fps': recorded_fps,
+                    'frame_count': self.frame_count
                 }
 
-                logger.info(f"Stopped recording: {self.current_filename} ({duration}s, {file_size_mb:.2f}MB) in {label_folder}")
+                logger.info(f"Stopped recording: {self.current_filename} ({duration}s, {file_size_mb:.2f}MB, {self.frame_count} frames at {recorded_fps:.1f}fps) in {label_folder}")
 
                 self.current_filename = None
                 self.recording_start_time = None
@@ -315,15 +451,26 @@ class CameraHandler:
                 raise Exception("Cannot reinitialize camera while recording")
 
             try:
+                # Stop the capture thread first
+                self._stop_capture_thread()
+
                 # Release current camera
                 if self.camera is not None:
                     self.camera.release()
                     self.camera = None
                     time.sleep(0.5)  # Give camera time to release
 
+                # Clear the frame
+                with self.frame_lock:
+                    self.latest_frame = None
+
                 # Reload configuration
                 import importlib
                 importlib.reload(config)
+
+                # Reset FPS tracking
+                self.fps_sample_times.clear()
+                self.actual_fps = config.VIDEO_FPS
 
                 # Reinitialize camera with new settings
                 self.initialize_camera()
@@ -342,10 +489,18 @@ class CameraHandler:
 
     def cleanup(self):
         """Clean up camera resources."""
+        # Stop capture thread first (outside of lock to avoid deadlock)
+        self._stop_capture_thread()
+
         with self.lock:
             if self.recording:
                 try:
-                    self.stop_recording()
+                    self.recording = False
+                    if hasattr(self, 'recording_thread') and self.recording_thread.is_alive():
+                        self.recording_thread.join(timeout=1.0)
+                    if self.video_writer is not None:
+                        self.video_writer.release()
+                        self.video_writer = None
                 except:
                     pass
 

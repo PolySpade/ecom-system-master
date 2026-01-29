@@ -46,6 +46,22 @@ class Database:
                 # Column already exists
                 pass
 
+            # Add compression-related columns if they don't exist
+            compression_columns = [
+                ('compression_status', 'TEXT DEFAULT "pending"'),
+                ('compressed_file_size_mb', 'REAL'),
+                ('compression_ratio', 'REAL'),
+                ('compressed_filename', 'TEXT')
+            ]
+
+            for column_name, column_def in compression_columns:
+                try:
+                    cursor.execute(f'ALTER TABLE transactions ADD COLUMN {column_name} {column_def}')
+                    logger.info(f"Added {column_name} column to existing database")
+                except sqlite3.OperationalError:
+                    # Column already exists
+                    pass
+
             conn.commit()
             conn.close()
             logger.info("Database initialized successfully")
@@ -322,3 +338,87 @@ class Database:
         except Exception as e:
             logger.error(f"Error in advanced search: {e}")
             return {'results': [], 'total': 0, 'limit': limit, 'offset': offset}
+
+    def update_compression_status(
+        self,
+        transaction_id: int,
+        status: str,
+        compressed_file_size_mb: Optional[float] = None,
+        compression_ratio: Optional[float] = None,
+        compressed_filename: Optional[str] = None
+    ):
+        """
+        Update the compression status for a transaction.
+
+        Args:
+            transaction_id: The ID of the transaction
+            status: Compression status (pending/processing/completed/failed/skipped)
+            compressed_file_size_mb: Size of compressed file in MB
+            compression_ratio: Percentage of size reduction
+            compressed_filename: Name of the compressed file
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            # Build update query dynamically
+            update_fields = ['compression_status = ?']
+            params = [status]
+
+            if compressed_file_size_mb is not None:
+                update_fields.append('compressed_file_size_mb = ?')
+                params.append(compressed_file_size_mb)
+
+            if compression_ratio is not None:
+                update_fields.append('compression_ratio = ?')
+                params.append(compression_ratio)
+
+            if compressed_filename is not None:
+                update_fields.append('compressed_filename = ?')
+                params.append(compressed_filename)
+
+            params.append(transaction_id)
+
+            query = f'''
+                UPDATE transactions
+                SET {', '.join(update_fields)}
+                WHERE id = ?
+            '''
+
+            cursor.execute(query, params)
+            conn.commit()
+            conn.close()
+
+            logger.info(f"Updated compression status for transaction {transaction_id}: {status}")
+        except Exception as e:
+            logger.error(f"Error updating compression status: {e}")
+            raise
+
+    def get_pending_compressions(self) -> List[Dict]:
+        """
+        Get all transactions with pending compression status.
+
+        Returns:
+            List of transaction dictionaries awaiting compression
+        """
+        try:
+            conn = self.get_connection()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT * FROM transactions
+                WHERE compression_status = 'pending'
+                AND end_time IS NOT NULL
+                ORDER BY created_at ASC
+            ''')
+
+            rows = cursor.fetchall()
+            transactions = [dict(row) for row in rows]
+
+            conn.close()
+            logger.info(f"Found {len(transactions)} pending compressions")
+            return transactions
+        except Exception as e:
+            logger.error(f"Error fetching pending compressions: {e}")
+            return []

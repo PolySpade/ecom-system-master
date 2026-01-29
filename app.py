@@ -5,6 +5,7 @@ import atexit
 from camera_handler import CameraHandler
 from barcode_handler import BarcodeHandler
 from database import Database
+from video_compressor import VideoCompressor
 import config
 from camera_utils import get_available_cameras
 
@@ -29,8 +30,63 @@ camera = CameraHandler()
 barcode_handler = BarcodeHandler()
 db = Database()
 
+
+def on_compression_complete(transaction_id: int, success: bool, result_data: dict):
+    """Callback when compression completes."""
+    try:
+        status = result_data.get('status', 'failed')
+        compressed_size = result_data.get('compressed_file_size_mb')
+        ratio = result_data.get('compression_ratio')
+        filename = result_data.get('compressed_filename')
+
+        db.update_compression_status(
+            transaction_id=transaction_id,
+            status=status,
+            compressed_file_size_mb=compressed_size,
+            compression_ratio=ratio,
+            compressed_filename=filename
+        )
+
+        if success:
+            logger.info(f"Compression completed for transaction {transaction_id}: {result_data.get('message', '')}")
+        else:
+            logger.warning(f"Compression failed for transaction {transaction_id}: {result_data.get('message', '')}")
+
+    except Exception as e:
+        logger.error(f"Error in compression callback: {e}")
+
+
+# Initialize video compressor
+compressor = VideoCompressor(on_complete=on_compression_complete)
+compressor.start()
+
 # Current transaction ID
 current_transaction_id = None
+
+
+def queue_video_compression(video_filename: str, transaction_id: int, label_folder: str = "Normal"):
+    """Queue a video for compression after recording completes."""
+    try:
+        # Build full video path (includes label folder)
+        from datetime import datetime
+        date_folder = datetime.now().strftime('%Y-%m-%d')
+        video_path = os.path.join(config.VIDEO_STORAGE_PATH, date_folder, label_folder, video_filename)
+
+        # Get compression settings
+        compression_settings = config.settings_manager.settings.get('compression', {})
+
+        # Mark as processing in database
+        db.update_compression_status(transaction_id, 'pending')
+
+        # Queue the compression
+        compressor.queue_compression(
+            video_path=video_path,
+            transaction_id=transaction_id,
+            settings=compression_settings
+        )
+
+    except Exception as e:
+        logger.error(f"Error queuing video compression: {e}")
 
 
 @app.route('/')
@@ -101,6 +157,7 @@ def process_barcode():
             recording_info = camera.stop_recording()
 
             # Update database transaction for completed recording
+            previous_transaction_id = current_transaction_id
             if current_transaction_id:
                 db.complete_transaction(
                     current_transaction_id,
@@ -108,6 +165,8 @@ def process_barcode():
                     recording_info['file_size_mb'],
                     'barcode'
                 )
+                # Queue compression for completed video
+                queue_video_compression(recording_info['filename'], current_transaction_id, recording_info.get('label_folder', 'Normal'))
 
             # Immediately start new recording with this barcode
             new_filename = camera.start_recording(result['barcode'])
@@ -132,6 +191,7 @@ def process_barcode():
             recording_info = camera.stop_recording()
 
             # Update database transaction
+            completed_transaction_id = current_transaction_id
             if current_transaction_id:
                 db.complete_transaction(
                     current_transaction_id,
@@ -139,6 +199,8 @@ def process_barcode():
                     recording_info['file_size_mb'],
                     'barcode'
                 )
+                # Queue compression for completed video
+                queue_video_compression(recording_info['filename'], current_transaction_id, recording_info.get('label_folder', 'Normal'))
 
             response = {
                 'action': 'stopped',
@@ -169,6 +231,7 @@ def manual_stop():
         recording_info = camera.stop_recording()
 
         # Update database transaction
+        completed_transaction_id = current_transaction_id
         if current_transaction_id:
             db.complete_transaction(
                 current_transaction_id,
@@ -176,6 +239,8 @@ def manual_stop():
                 recording_info['file_size_mb'],
                 'manual'
             )
+            # Queue compression for completed video
+            queue_video_compression(recording_info['filename'], current_transaction_id, recording_info.get('label_folder', 'Normal'))
 
         response = {
             'action': 'stopped',
@@ -348,9 +413,35 @@ def restart_camera():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/compression/status', methods=['GET'])
+def get_compression_status():
+    """Get the current compression queue status."""
+    try:
+        status = compressor.get_queue_status()
+        return jsonify(status), 200
+    except Exception as e:
+        logger.error(f"Error getting compression status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/compression/check-ffmpeg', methods=['GET'])
+def check_ffmpeg():
+    """Check if FFmpeg is installed and available."""
+    try:
+        available, message = compressor.check_ffmpeg_installed()
+        return jsonify({
+            'available': available,
+            'message': message
+        }), 200
+    except Exception as e:
+        logger.error(f"Error checking FFmpeg: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 def cleanup():
     """Clean up resources on shutdown."""
     logger.info("Shutting down application...")
+    compressor.stop()
     camera.cleanup()
 
 

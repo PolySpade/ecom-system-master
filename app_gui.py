@@ -13,6 +13,7 @@ from tkcalendar import DateEntry
 from camera_handler import CameraHandler
 from barcode_handler import BarcodeHandler
 from database import Database
+from video_compressor import VideoCompressor
 import config
 from settings_manager import SettingsManager
 from camera_utils import get_available_cameras
@@ -50,10 +51,15 @@ class EcomVideoTrackerApp:
         self.barcode_handler = BarcodeHandler()
         self.db = Database()
 
+        # Initialize video compressor
+        self.compressor = VideoCompressor(on_complete=self.on_compression_complete)
+        self.compressor.start()
+
         # State variables
         self.current_transaction_id = None
         self.recording_start_time = None
         self.update_running = True
+        self.compression_status = ""  # For displaying compression status
 
         # Setup UI
         self.setup_ui()
@@ -407,7 +413,8 @@ class EcomVideoTrackerApp:
             ("⚡ Status:", "status_label", "Idle", "#6b7280"),
             ("📄 Current File:", "filename_label", "-", "#6b7280"),
             ("⏱️ Duration:", "duration_label", "00:00", "#6b7280"),
-            ("💾 Storage Used:", "storage_label", "0 MB", "#6b7280")
+            ("💾 Storage Used:", "storage_label", "0 MB", "#6b7280"),
+            ("🗜️ Compression:", "compression_label", "Ready", "#6b7280")
         ]
 
         for icon_label, attr_name, default_text, color in info_data:
@@ -490,66 +497,52 @@ class EcomVideoTrackerApp:
         self.status_bar.pack(fill=tk.BOTH, expand=True)
 
     def update_camera_feed(self):
-        """Update the camera feed display."""
+        """Update the camera feed display with lightweight preview - optimized for real-time."""
         if not self.update_running:
             return
 
-        frame = self.camera.get_frame()
+        try:
+            # Cache container dimensions (only recalculate occasionally)
+            if not hasattr(self, '_cached_container_size') or self._frame_count % 30 == 0:
+                self.camera_container.update_idletasks()
+                container_width = self.camera_container.winfo_width()
+                container_height = self.camera_container.winfo_height()
 
-        if frame is not None:
-            # Get original frame dimensions
-            original_height, original_width = frame.shape[:2]
+                # Use minimum dimensions if container not yet sized
+                if container_width < 100:
+                    container_width = 640
+                if container_height < 100:
+                    container_height = 480
 
-            # Get container size dynamically
-            self.camera_container.update_idletasks()
-            container_width = self.camera_container.winfo_width()
-            container_height = self.camera_container.winfo_height()
+                self._cached_container_size = (container_width - 4, container_height - 4)
 
-            # Use minimum dimensions if container not yet sized
-            if container_width < 100:
-                container_width = 640
-            if container_height < 100:
-                container_height = 480
+            if not hasattr(self, '_frame_count'):
+                self._frame_count = 0
+            self._frame_count += 1
 
-            # Leave some padding for the container border
-            max_display_width = container_width - 4
-            max_display_height = container_height - 4
+            max_display_width, max_display_height = self._cached_container_size
 
-            # Calculate aspect ratio preserving dimensions
-            aspect_ratio = original_width / original_height
+            # Get preview frame (already downscaled for performance)
+            frame = self.camera.get_preview_frame(max_display_width, max_display_height)
 
-            # Calculate new dimensions while maintaining aspect ratio
-            if original_width / max_display_width > original_height / max_display_height:
-                # Width is the limiting factor
-                display_width = max_display_width
-                display_height = int(max_display_width / aspect_ratio)
-            else:
-                # Height is the limiting factor
-                display_height = max_display_height
-                display_width = int(max_display_height * aspect_ratio)
+            if frame is not None:
+                # Convert BGR to RGB using efficient method
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Ensure minimum dimensions
-            display_width = max(1, display_width)
-            display_height = max(1, display_height)
+                # Convert to PIL Image and PhotoImage
+                img = Image.fromarray(frame_rgb)
+                photo = ImageTk.PhotoImage(image=img)
 
-            # Resize frame maintaining aspect ratio
-            frame = cv2.resize(frame, (display_width, display_height), interpolation=cv2.INTER_AREA)
+                # Update label
+                self.camera_label.configure(image=photo)
+                self.camera_label.image = photo
 
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            # Silently ignore frame errors to maintain smooth display
+            pass
 
-            # Convert to PIL Image
-            img = Image.fromarray(frame_rgb)
-
-            # Convert to PhotoImage
-            photo = ImageTk.PhotoImage(image=img)
-
-            # Update label
-            self.camera_label.configure(image=photo)
-            self.camera_label.image = photo
-
-        # Schedule next update
-        self.root.after(30, self.update_camera_feed)
+        # Schedule next update (33ms = ~30 FPS display rate - reduces CPU load while still smooth)
+        self.root.after(1, self.update_camera_feed)
 
     def update_status(self):
         """Update status information."""
@@ -567,6 +560,25 @@ class EcomVideoTrackerApp:
             # Update storage info
             storage_mb = self.db.get_total_storage_used()
             self.storage_label.configure(text=f"{storage_mb:.2f} MB")
+
+            # Update compression status
+            queue_status = self.compressor.get_queue_status()
+            if queue_status['is_processing']:
+                self.compression_label.configure(text="Processing...", fg="#f59e0b")
+                # Refresh recordings list every 5 seconds while compressing
+                if not hasattr(self, '_last_refresh') or time.time() - self._last_refresh > 5:
+                    self._last_refresh = time.time()
+                    self.load_recordings()
+            elif queue_status['queue_size'] > 0:
+                self.compression_label.configure(text=f"Queued: {queue_status['queue_size']}", fg="#3b82f6")
+            elif self.compression_status:
+                self.compression_label.configure(text=self.compression_status, fg="#10b981")
+                # Refresh one more time after completion
+                if hasattr(self, '_last_refresh'):
+                    del self._last_refresh
+                    self.load_recordings()
+            else:
+                self.compression_label.configure(text="Ready", fg="#6b7280")
 
         except Exception as e:
             logger.error(f"Error updating status: {e}")
@@ -610,12 +622,19 @@ class EcomVideoTrackerApp:
                 recording_info = self.camera.stop_recording()
 
                 # Update database for completed recording
+                previous_transaction_id = self.current_transaction_id
                 if self.current_transaction_id:
                     self.db.complete_transaction(
                         self.current_transaction_id,
                         recording_info['duration'],
                         recording_info['file_size_mb'],
                         'barcode'
+                    )
+                    # Queue compression for completed video
+                    self.queue_video_compression(
+                        recording_info['filename'],
+                        previous_transaction_id,
+                        recording_info.get('label_folder', 'Normal')
                     )
 
                 # Immediately start new recording with this barcode and label
@@ -640,12 +659,19 @@ class EcomVideoTrackerApp:
                 recording_info = self.camera.stop_recording()
 
                 # Update database
+                completed_transaction_id = self.current_transaction_id
                 if self.current_transaction_id:
                     self.db.complete_transaction(
                         self.current_transaction_id,
                         recording_info['duration'],
                         recording_info['file_size_mb'],
                         'barcode'
+                    )
+                    # Queue compression for completed video
+                    self.queue_video_compression(
+                        recording_info['filename'],
+                        completed_transaction_id,
+                        recording_info.get('label_folder', 'Normal')
                     )
 
                 # Update UI
@@ -679,12 +705,19 @@ class EcomVideoTrackerApp:
             recording_info = self.camera.stop_recording()
 
             # Update database
+            completed_transaction_id = self.current_transaction_id
             if self.current_transaction_id:
                 self.db.complete_transaction(
                     self.current_transaction_id,
                     recording_info['duration'],
                     recording_info['file_size_mb'],
                     'manual'
+                )
+                # Queue compression for completed video
+                self.queue_video_compression(
+                    recording_info['filename'],
+                    completed_transaction_id,
+                    recording_info.get('label_folder', 'Normal')
                 )
 
             # Update UI
@@ -739,7 +772,7 @@ class EcomVideoTrackerApp:
             self.stop_button.configure(state=tk.DISABLED)
 
     def load_recordings(self):
-        """Load and display recent recordings."""
+        """Load and display recent recordings with compression status."""
         try:
             recordings = self.db.get_recent_transactions(10)
 
@@ -755,10 +788,32 @@ class EcomVideoTrackerApp:
                     file_size = rec['file_size_mb'] if rec['file_size_mb'] else 0
                     label = rec.get('label') or 'Normal (Standard)'
 
+                    # Get compression info
+                    comp_status = rec.get('compression_status', 'pending')
+                    comp_ratio = rec.get('compression_ratio')
+                    comp_size = rec.get('compressed_file_size_mb')
+
+                    # Format compression status display
+                    if comp_status == 'completed' and comp_ratio:
+                        comp_display = f"✓ Compressed ({comp_ratio:.1f}% smaller)"
+                        if comp_size:
+                            comp_display += f" → {comp_size:.2f}MB"
+                    elif comp_status == 'processing':
+                        comp_display = "⏳ Compressing..."
+                    elif comp_status == 'pending':
+                        comp_display = "⏳ Queued"
+                    elif comp_status == 'failed':
+                        comp_display = "✗ Failed"
+                    elif comp_status == 'skipped':
+                        comp_display = "⊘ Skipped"
+                    else:
+                        comp_display = f"? {comp_status}"
+
                     self.recordings_text.insert(tk.END, f"Barcode: {rec['barcode']}\n", "bold")
                     self.recordings_text.insert(tk.END, f"  Label: {label}\n")
                     self.recordings_text.insert(tk.END, f"  Started: {start_time}\n")
                     self.recordings_text.insert(tk.END, f"  Duration: {duration}s | Size: {file_size:.2f}MB\n")
+                    self.recordings_text.insert(tk.END, f"  Compression: {comp_display}\n")
                     self.recordings_text.insert(tk.END, f"  File: {rec['video_filename']}\n")
                     self.recordings_text.insert(tk.END, "\n")
 
@@ -834,6 +889,65 @@ class EcomVideoTrackerApp:
             logger.error(f"Error opening settings: {e}")
             messagebox.showerror("Error", f"Failed to open settings: {str(e)}")
 
+    def on_compression_complete(self, transaction_id: int, success: bool, result_data: dict):
+        """Callback when compression completes."""
+        try:
+            status = result_data.get('status', 'failed')
+            compressed_size = result_data.get('compressed_file_size_mb')
+            ratio = result_data.get('compression_ratio')
+            filename = result_data.get('compressed_filename')
+
+            self.db.update_compression_status(
+                transaction_id=transaction_id,
+                status=status,
+                compressed_file_size_mb=compressed_size,
+                compression_ratio=ratio,
+                compressed_filename=filename
+            )
+
+            if success:
+                self.compression_status = f"Compressed: {ratio:.1f}% reduction"
+                logger.info(f"Compression completed for transaction {transaction_id}: {result_data.get('message', '')}")
+            else:
+                self.compression_status = f"Compression failed"
+                logger.warning(f"Compression failed for transaction {transaction_id}: {result_data.get('message', '')}")
+
+            # Update UI on main thread
+            self.root.after(0, self.load_recordings)
+
+        except Exception as e:
+            logger.error(f"Error in compression callback: {e}")
+
+    def queue_video_compression(self, video_filename: str, transaction_id: int, label_folder: str = "Normal"):
+        """Queue a video for compression after recording completes."""
+        try:
+            # Build full video path (includes label folder)
+            date_folder = datetime.now().strftime('%Y-%m-%d')
+            video_path = os.path.join(config.VIDEO_STORAGE_PATH, date_folder, label_folder, video_filename)
+
+            # Get compression settings
+            compression_settings = config.settings_manager.settings.get('compression', {})
+
+            if not compression_settings.get('enabled', False):
+                logger.info("Compression disabled, skipping")
+                return
+
+            # Mark as processing in database
+            self.db.update_compression_status(transaction_id, 'pending')
+
+            # Queue the compression
+            self.compressor.queue_compression(
+                video_path=video_path,
+                transaction_id=transaction_id,
+                settings=compression_settings
+            )
+
+            self.compression_status = "Compression queued..."
+            logger.info(f"Queued compression for {video_filename}")
+
+        except Exception as e:
+            logger.error(f"Error queuing video compression: {e}")
+
     def on_closing(self):
         """Handle application closing."""
         if self.camera.is_recording():
@@ -846,6 +960,7 @@ class EcomVideoTrackerApp:
                 return
 
         self.update_running = False
+        self.compressor.stop()  # Stop the compressor
         self.camera.cleanup()
         self.root.destroy()
         logger.info("Application closed")
@@ -1478,6 +1593,7 @@ class SettingsDialog:
         # Create tabs
         self.create_video_tab(notebook)
         self.create_camera_tab(notebook)
+        self.create_compression_tab(notebook)
         self.create_storage_tab(notebook)
         self.create_app_tab(notebook)
 
@@ -1659,6 +1775,127 @@ class SettingsDialog:
             justify=tk.LEFT
         )
         info_label.grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+
+    def create_compression_tab(self, notebook):
+        """Create compression settings tab."""
+        tab = ttk.Frame(notebook, padding="10")
+        notebook.add(tab, text="Compression")
+
+        # Get current compression settings
+        compression_settings = self.current_settings.get('compression', {})
+
+        # Enable compression checkbox
+        self.compression_enabled_var = tk.BooleanVar(value=compression_settings.get('enabled', True))
+        enable_check = ttk.Checkbutton(
+            tab,
+            text="Enable Auto-Compression (requires FFmpeg)",
+            variable=self.compression_enabled_var
+        )
+        enable_check.grid(row=0, column=0, sticky=tk.W, pady=(0, 15))
+
+        # FFmpeg status
+        ffmpeg_frame = ttk.Frame(tab)
+        ffmpeg_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+
+        self.ffmpeg_status_label = ttk.Label(
+            ffmpeg_frame,
+            text="Checking FFmpeg...",
+            font=("Arial", 9)
+        )
+        self.ffmpeg_status_label.pack(side=tk.LEFT)
+
+        # Check FFmpeg status
+        self._check_ffmpeg_status()
+
+        # Codec selection
+        ttk.Label(tab, text="Compression Codec:", font=("Arial", 10, "bold")).grid(
+            row=2, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.compression_codec_var = tk.StringVar(value=compression_settings.get('codec', 'h264'))
+        codec_frame = ttk.Frame(tab)
+        codec_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        ttk.Radiobutton(
+            codec_frame, text="H.264 (Faster, Compatible)",
+            variable=self.compression_codec_var, value='h264'
+        ).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Radiobutton(
+            codec_frame, text="H.265/HEVC (Smaller, Slower)",
+            variable=self.compression_codec_var, value='h265'
+        ).pack(side=tk.LEFT)
+
+        # Quality (CRF)
+        ttk.Label(tab, text="Quality (CRF):", font=("Arial", 10, "bold")).grid(
+            row=4, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        crf_frame = ttk.Frame(tab)
+        crf_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        self.compression_crf_var = tk.IntVar(value=compression_settings.get('crf', 23))
+        crf_scale = ttk.Scale(
+            crf_frame, from_=18, to=35, variable=self.compression_crf_var,
+            orient=tk.HORIZONTAL, length=200
+        )
+        crf_scale.pack(side=tk.LEFT)
+
+        self.crf_value_label = ttk.Label(crf_frame, text=f"{self.compression_crf_var.get()}")
+        self.crf_value_label.pack(side=tk.LEFT, padx=(10, 0))
+
+        # Update label when scale changes
+        def update_crf_label(*args):
+            self.crf_value_label.configure(text=f"{int(self.compression_crf_var.get())}")
+        self.compression_crf_var.trace('w', update_crf_label)
+
+        ttk.Label(
+            tab, text="Lower = Better Quality, Larger File | Higher = Lower Quality, Smaller File",
+            font=("Arial", 8), foreground="gray"
+        ).grid(row=6, column=0, sticky=tk.W, pady=(0, 10))
+
+        # Preset
+        ttk.Label(tab, text="Encoding Speed:", font=("Arial", 10, "bold")).grid(
+            row=7, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.compression_preset_var = tk.StringVar(value=compression_settings.get('preset', 'medium'))
+        preset_combo = ttk.Combobox(
+            tab,
+            textvariable=self.compression_preset_var,
+            values=['ultrafast', 'fast', 'medium', 'slow'],
+            state='readonly',
+            width=20
+        )
+        preset_combo.grid(row=8, column=0, sticky=tk.W, pady=(0, 10))
+
+        ttk.Label(
+            tab, text="Slower = Better compression ratio",
+            font=("Arial", 8), foreground="gray"
+        ).grid(row=9, column=0, sticky=tk.W, pady=(0, 10))
+
+        # Delete original checkbox
+        self.compression_delete_original_var = tk.BooleanVar(
+            value=compression_settings.get('delete_original', True)
+        )
+        delete_check = ttk.Checkbutton(
+            tab,
+            text="Delete original file after successful compression",
+            variable=self.compression_delete_original_var
+        )
+        delete_check.grid(row=10, column=0, sticky=tk.W, pady=(0, 10))
+
+    def _check_ffmpeg_status(self):
+        """Check and update FFmpeg status label."""
+        try:
+            from video_compressor import VideoCompressor
+            temp_compressor = VideoCompressor()
+            available, message = temp_compressor.check_ffmpeg_installed()
+            if available:
+                self.ffmpeg_status_label.configure(text=f"✓ {message}", foreground="green")
+            else:
+                self.ffmpeg_status_label.configure(text=f"✗ {message}", foreground="red")
+        except Exception as e:
+            self.ffmpeg_status_label.configure(text=f"✗ Error: {str(e)}", foreground="red")
 
     def create_storage_tab(self, notebook):
         """Create storage settings tab."""
@@ -1913,6 +2150,15 @@ class SettingsDialog:
                 'flask_host': self.flask_host_var.get(),
                 'flask_port': self.flask_port_var.get(),
                 'debug_mode': self.debug_mode_var.get()
+            })
+
+            # Update compression settings
+            self.settings_manager.update_category('compression', {
+                'enabled': self.compression_enabled_var.get(),
+                'codec': self.compression_codec_var.get(),
+                'crf': int(self.compression_crf_var.get()),
+                'preset': self.compression_preset_var.get(),
+                'delete_original': self.compression_delete_original_var.get()
             })
 
             # Save to file

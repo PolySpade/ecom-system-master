@@ -27,6 +27,9 @@ MANIFEST
 *.manifest
 *.spec
 
+#ffmpeg
+ffmpeg/
+
 # Virtual environments
 .venv/
 venv/
@@ -60,3 +63,4 @@ htmlcov/
 # UV package manager
 .uv/
 uv.lock
+nul

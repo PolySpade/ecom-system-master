@@ -176,6 +176,7 @@
                 <div class="settings-tabs">
                     <button class="settings-tab active" data-tab="video">Video</button>
                     <button class="settings-tab" data-tab="camera">Camera</button>
+                    <button class="settings-tab" data-tab="compression">Compression</button>
                     <button class="settings-tab" data-tab="storage">Storage</button>
                     <button class="settings-tab" data-tab="app">App</button>
                 </div>
@@ -240,6 +241,68 @@
                         • Choose the camera you want to use for recording<br><br>
                         If your camera doesn't appear, try clicking 'Refresh Cameras'.<br>
                         Changes will be applied immediately after saving (no restart required).
+                    </p>
+                </div>
+
+                <!-- Compression Settings Tab -->
+                <div id="compressionTab" class="settings-tab-content">
+                    <h3>Video Compression Settings</h3>
+
+                    <div class="settings-field ffmpeg-status-field">
+                        <label>FFmpeg Status:</label>
+                        <div id="ffmpegStatus" class="ffmpeg-status">
+                            <span class="status-checking">Checking FFmpeg...</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-field">
+                        <label>
+                            <input type="checkbox" id="compressionEnabled">
+                            Enable automatic video compression after recording
+                        </label>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="compressionCodecSelect">Compression Codec:</label>
+                        <select id="compressionCodecSelect" class="settings-select">
+                            <option value="h264">H.264 (Recommended - Better compatibility)</option>
+                            <option value="h265">H.265/HEVC (Better compression, slower)</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="compressionCrfSlider">Quality (CRF): <span id="crfValue">23</span></label>
+                        <input type="range" id="compressionCrfSlider" class="settings-slider" min="18" max="35" value="23">
+                        <div class="slider-labels">
+                            <span>Higher Quality</span>
+                            <span>Smaller File</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="compressionPresetSelect">Encoding Speed:</label>
+                        <select id="compressionPresetSelect" class="settings-select">
+                            <option value="ultrafast">Ultra Fast (Larger files)</option>
+                            <option value="fast">Fast</option>
+                            <option value="medium">Medium (Recommended)</option>
+                            <option value="slow">Slow (Better compression)</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <label>
+                            <input type="checkbox" id="deleteOriginalCheck" checked>
+                            Delete original file after successful compression
+                        </label>
+                    </div>
+
+                    <p class="settings-note">
+                        Compression Settings Help:<br>
+                        • CRF 18-23 = High quality, larger files<br>
+                        • CRF 24-28 = Good quality, balanced size<br>
+                        • CRF 29-35 = Lower quality, smaller files<br><br>
+                        FFmpeg must be installed on your system for compression to work.
+                        <a href="https://ffmpeg.org/download.html" target="_blank">Download FFmpeg</a>
                     </p>
                 </div>
 

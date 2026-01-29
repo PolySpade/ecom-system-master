@@ -8,7 +8,25 @@
       "Bash(uv pip install:*)",
       "Bash(dir:*)",
       "Bash(test:*)",
-      "Bash(powershell -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; .\\\\.venv\\\\Scripts\\\\pyinstaller.exe --clean ecom_video_tracker.spec\")"
+      "Bash(powershell -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; .\\\\.venv\\\\Scripts\\\\pyinstaller.exe --clean ecom_video_tracker.spec\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem -Path ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master\\\\dist'' | Format-Table Name, Length, LastWriteTime\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; & ''.venv\\\\Scripts\\\\pip.exe'' install nuitka ordered-set zstandard\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; .\\\\.venv\\\\Scripts\\\\python.exe -m pip install nuitka ordered-set zstandard\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; uv pip install nuitka ordered-set zstandard\")",
+      "Bash(powershell.exe -Command \"\n$upxUrl = ''https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip''\n$downloadPath = ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master\\\\upx.zip''\n$extractPath = ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master\\\\upx''\nInvoke-WebRequest -Uri $upxUrl -OutFile $downloadPath\nExpand-Archive -Path $downloadPath -DestinationPath $extractPath -Force\nRemove-Item $downloadPath\nGet-ChildItem $extractPath -Recurse | Where-Object { $_Name -eq ''upx.exe'' } | Select-Object FullName\n\")",
+      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\Clinton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Clinton-Documents-Coding-Project-ecom-system-master\\\\tasks\\\\b3be8d5.output'' -Tail 50\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master''; .\\\\.venv\\\\Scripts\\\\python.exe build_nuitka.py 2>&1\")",
+      "Bash(powershell.exe -Command \"Start-Sleep -Seconds 60; Get-Content ''C:\\\\Users\\\\Clinton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Clinton-Documents-Coding-Project-ecom-system-master\\\\tasks\\\\b404ebc.output'' -Tail 40\")",
+      "Bash(powershell.exe -Command \"Start-Sleep -Seconds 180; Get-Content ''C:\\\\Users\\\\Clinton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Clinton-Documents-Coding-Project-ecom-system-master\\\\tasks\\\\b404ebc.output'' -Tail 30\")",
+      "Bash(powershell.exe -Command \"Start-Sleep -Seconds 300; Get-Content ''C:\\\\Users\\\\Clinton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Clinton-Documents-Coding-Project-ecom-system-master\\\\tasks\\\\b404ebc.output'' -Tail 20\")",
+      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\Clinton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Clinton-Documents-Coding-Project-ecom-system-master\\\\tasks\\\\b404ebc.output'' -Tail 15\")",
+      "Bash(powershell.exe -Command \"Start-Sleep -Seconds 120; Get-Content ''C:\\\\Users\\\\Clinton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-Clinton-Documents-Coding-Project-ecom-system-master\\\\tasks\\\\b404ebc.output'' -Tail 20\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master\\\\dist_nuitka\\\\EcomVideoTracker.exe'' | Select-Object Name, @{N=''Size \\(MB\\)''; E={[math]::Round\\($_Length/1MB, 2\\)}}\")",
+      "Bash(powershell.exe -Command \"upx --best --lzma ''C:\\\\Users\\\\Clinton\\\\Documents\\\\Coding Project\\\\ecom-system-master\\\\dist_nuitka\\\\EcomVideoTracker.exe'' 2>&1\")",
+      "Bash(ls:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python -c:*)",
+      "WebSearch"
     ]
   }
 }
