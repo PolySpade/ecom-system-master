@@ -20,7 +20,11 @@ class SettingsManager:
             'codec': 'mp4v'
         },
         'camera': {
-            'index': 0
+            'index': 0,
+            'auto_exposure': True,
+            'exposure': -4,
+            'gain': 0,
+            'brightness': 128
         },
         'storage': {
             'video_path': 'videos',
@@ -135,6 +139,31 @@ class SettingsManager:
     def get_camera_index(self) -> int:
         """Get camera index."""
         return self.get('camera', 'index', 0)
+
+    def get_camera_auto_exposure(self) -> bool:
+        """Get camera auto exposure setting."""
+        return self.get('camera', 'auto_exposure', True)
+
+    def get_camera_exposure(self) -> int:
+        """Get camera manual exposure value (-13 to -1)."""
+        return self.get('camera', 'exposure', -4)
+
+    def get_camera_gain(self) -> int:
+        """Get camera gain value (0 to 255)."""
+        return self.get('camera', 'gain', 0)
+
+    def get_camera_brightness(self) -> int:
+        """Get camera brightness value (0 to 255)."""
+        return self.get('camera', 'brightness', 128)
+
+    def get_camera_exposure_settings(self) -> dict:
+        """Get all camera exposure settings as a dictionary."""
+        return {
+            'auto_exposure': self.get_camera_auto_exposure(),
+            'exposure': self.get_camera_exposure(),
+            'gain': self.get_camera_gain(),
+            'brightness': self.get_camera_brightness()
+        }
 
     def get_video_storage_path(self) -> str:
         """Get video storage path (normalized for OS)."""

@@ -69,6 +69,10 @@ class CameraHandler:
             # Set buffer size to minimum to reduce latency
             self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
+            # ===== Light sensitivity settings =====
+            # Apply exposure settings from config
+            self.apply_exposure_settings()
+
             # Warm up camera
             time.sleep(config.CAMERA_WARMUP_TIME)
 
@@ -184,6 +188,82 @@ class CameraHandler:
     def get_actual_fps(self):
         """Get the actual measured FPS of the camera."""
         return self.actual_fps
+
+    def apply_exposure_settings(self, auto_exposure=None, exposure=None, gain=None, brightness=None):
+        """
+        Apply camera exposure settings.
+
+        If no parameters are provided, reads from config.
+        If parameters are provided, applies those values directly (for real-time preview).
+
+        Args:
+            auto_exposure: True for auto, False for manual mode
+            exposure: Manual exposure value (-13 to -1, lower = darker)
+            gain: Gain value (0 to 255, lower = less noise)
+            brightness: Brightness value (0 to 255)
+        """
+        if self.camera is None or not self.camera.isOpened():
+            logger.warning("Cannot apply exposure settings - camera not available")
+            return False
+
+        try:
+            # Use provided values or load from config
+            if auto_exposure is None:
+                auto_exposure = config.settings_manager.get_camera_auto_exposure()
+            if exposure is None:
+                exposure = config.settings_manager.get_camera_exposure()
+            if gain is None:
+                gain = config.settings_manager.get_camera_gain()
+            if brightness is None:
+                brightness = config.settings_manager.get_camera_brightness()
+
+            # Apply auto-exposure setting
+            # 0 or 0.25 = manual mode (varies by camera)
+            # 1 or 3 = auto mode (varies by camera)
+            if auto_exposure:
+                self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)  # Auto mode
+                logger.info("Camera set to auto-exposure mode")
+            else:
+                self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual mode
+
+                # Apply manual exposure value
+                self.camera.set(cv2.CAP_PROP_EXPOSURE, exposure)
+                logger.info(f"Camera exposure set to {exposure}")
+
+            # Apply gain
+            self.camera.set(cv2.CAP_PROP_GAIN, gain)
+            logger.info(f"Camera gain set to {gain}")
+
+            # Apply brightness
+            self.camera.set(cv2.CAP_PROP_BRIGHTNESS, brightness)
+            logger.info(f"Camera brightness set to {brightness}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error applying exposure settings: {e}")
+            return False
+
+    def get_current_exposure_settings(self):
+        """
+        Get the current camera exposure settings from the camera hardware.
+
+        Returns:
+            dict: Current exposure settings from camera
+        """
+        if self.camera is None or not self.camera.isOpened():
+            return None
+
+        try:
+            return {
+                'auto_exposure': self.camera.get(cv2.CAP_PROP_AUTO_EXPOSURE),
+                'exposure': self.camera.get(cv2.CAP_PROP_EXPOSURE),
+                'gain': self.camera.get(cv2.CAP_PROP_GAIN),
+                'brightness': self.camera.get(cv2.CAP_PROP_BRIGHTNESS)
+            }
+        except Exception as e:
+            logger.error(f"Error getting exposure settings: {e}")
+            return None
 
     def generate_frames(self):
         """Generator function for streaming frames to the web UI (uses preview for performance)."""

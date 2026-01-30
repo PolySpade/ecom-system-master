@@ -1761,7 +1761,7 @@ class SettingsDialog:
         # Refresh cameras button
         refresh_btn = ttk.Button(
             camera_frame,
-            text="🔄 Refresh Cameras",
+            text="Refresh Cameras",
             command=self.refresh_cameras
         )
         refresh_btn.grid(row=1, column=0, sticky=tk.W)
@@ -1769,12 +1769,139 @@ class SettingsDialog:
         # Camera info
         info_label = ttk.Label(
             tab,
-            text="✓ = Working  |  ✗ = Not responding\nClick 'Refresh' if camera not shown.",
+            text="Click 'Refresh' if camera not shown.",
             font=("Arial", 9),
             foreground="gray",
             justify=tk.LEFT
         )
         info_label.grid(row=2, column=0, sticky=tk.W, pady=(5, 0))
+
+        # Separator
+        separator = ttk.Separator(tab, orient='horizontal')
+        separator.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=15)
+
+        # ===== Exposure Settings Section =====
+        ttk.Label(tab, text="Exposure Settings:", font=("Arial", 10, "bold")).grid(
+            row=4, column=0, sticky=tk.W, pady=(0, 10)
+        )
+
+        # Get current exposure settings
+        camera_settings = self.current_settings.get('camera', {})
+
+        # Auto-exposure checkbox
+        self.auto_exposure_var = tk.BooleanVar(value=camera_settings.get('auto_exposure', True))
+        auto_exp_check = ttk.Checkbutton(
+            tab,
+            text="Auto Exposure (uncheck for manual control)",
+            variable=self.auto_exposure_var,
+            command=self._toggle_exposure_controls
+        )
+        auto_exp_check.grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
+
+        # Manual exposure controls frame
+        self.exposure_controls_frame = ttk.Frame(tab)
+        self.exposure_controls_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+
+        # Exposure slider (-13 to -1)
+        exp_row = ttk.Frame(self.exposure_controls_frame)
+        exp_row.pack(fill=tk.X, pady=2)
+        ttk.Label(exp_row, text="Exposure:", width=12).pack(side=tk.LEFT)
+        self.exposure_var = tk.IntVar(value=camera_settings.get('exposure', -4))
+        self.exposure_scale = ttk.Scale(
+            exp_row, from_=-13, to=-1, variable=self.exposure_var,
+            orient=tk.HORIZONTAL, length=180,
+            command=lambda v: self._on_exposure_change()
+        )
+        self.exposure_scale.pack(side=tk.LEFT, padx=(0, 10))
+        self.exposure_value_label = ttk.Label(exp_row, text=f"{self.exposure_var.get()}", width=4)
+        self.exposure_value_label.pack(side=tk.LEFT)
+        ttk.Label(exp_row, text="(darker <-> brighter)", font=("Arial", 8), foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
+
+        # Gain slider (0 to 255)
+        gain_row = ttk.Frame(self.exposure_controls_frame)
+        gain_row.pack(fill=tk.X, pady=2)
+        ttk.Label(gain_row, text="Gain:", width=12).pack(side=tk.LEFT)
+        self.gain_var = tk.IntVar(value=camera_settings.get('gain', 0))
+        self.gain_scale = ttk.Scale(
+            gain_row, from_=0, to=255, variable=self.gain_var,
+            orient=tk.HORIZONTAL, length=180,
+            command=lambda v: self._on_exposure_change()
+        )
+        self.gain_scale.pack(side=tk.LEFT, padx=(0, 10))
+        self.gain_value_label = ttk.Label(gain_row, text=f"{self.gain_var.get()}", width=4)
+        self.gain_value_label.pack(side=tk.LEFT)
+        ttk.Label(gain_row, text="(amplification)", font=("Arial", 8), foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
+
+        # Brightness slider (0 to 255)
+        bright_row = ttk.Frame(self.exposure_controls_frame)
+        bright_row.pack(fill=tk.X, pady=2)
+        ttk.Label(bright_row, text="Brightness:", width=12).pack(side=tk.LEFT)
+        self.brightness_var = tk.IntVar(value=camera_settings.get('brightness', 128))
+        self.brightness_scale = ttk.Scale(
+            bright_row, from_=0, to=255, variable=self.brightness_var,
+            orient=tk.HORIZONTAL, length=180,
+            command=lambda v: self._on_exposure_change()
+        )
+        self.brightness_scale.pack(side=tk.LEFT, padx=(0, 10))
+        self.brightness_value_label = ttk.Label(bright_row, text=f"{self.brightness_var.get()}", width=4)
+        self.brightness_value_label.pack(side=tk.LEFT)
+        ttk.Label(bright_row, text="(image brightness)", font=("Arial", 8), foreground="gray").pack(side=tk.LEFT, padx=(10, 0))
+
+        # Live preview checkbox
+        self.live_preview_var = tk.BooleanVar(value=True)
+        live_preview_check = ttk.Checkbutton(
+            tab,
+            text="Live Preview (apply changes immediately)",
+            variable=self.live_preview_var
+        )
+        live_preview_check.grid(row=7, column=0, sticky=tk.W, pady=(10, 5))
+
+        # Exposure info
+        exp_info_label = ttk.Label(
+            tab,
+            text="Tip: Lower exposure and gain reduce light sensitivity and noise.",
+            font=("Arial", 8, "italic"),
+            foreground="gray"
+        )
+        exp_info_label.grid(row=8, column=0, sticky=tk.W, pady=(5, 0))
+
+        # Initialize control state
+        self._toggle_exposure_controls()
+
+    def _toggle_exposure_controls(self):
+        """Enable or disable manual exposure controls based on auto-exposure checkbox."""
+        state = 'disabled' if self.auto_exposure_var.get() else 'normal'
+        for child in self.exposure_controls_frame.winfo_children():
+            for widget in child.winfo_children():
+                if isinstance(widget, (ttk.Scale, ttk.Entry)):
+                    widget.configure(state=state)
+        # Apply change immediately if live preview enabled
+        if hasattr(self, 'live_preview_var') and self.live_preview_var.get():
+            self._apply_live_exposure()
+
+    def _on_exposure_change(self):
+        """Handle exposure slider changes."""
+        # Update value labels
+        self.exposure_value_label.configure(text=f"{int(self.exposure_var.get())}")
+        self.gain_value_label.configure(text=f"{int(self.gain_var.get())}")
+        self.brightness_value_label.configure(text=f"{int(self.brightness_var.get())}")
+
+        # Apply to camera if live preview is enabled
+        if hasattr(self, 'live_preview_var') and self.live_preview_var.get():
+            self._apply_live_exposure()
+
+    def _apply_live_exposure(self):
+        """Apply exposure settings to camera in real-time."""
+        try:
+            if self.main_app and hasattr(self.main_app, 'camera') and self.main_app.camera:
+                self.main_app.camera.apply_exposure_settings(
+                    auto_exposure=self.auto_exposure_var.get(),
+                    exposure=int(self.exposure_var.get()),
+                    gain=int(self.gain_var.get()),
+                    brightness=int(self.brightness_var.get())
+                )
+        except Exception as e:
+            logger.warning(f"Could not apply live exposure settings: {e}")
 
     def create_compression_tab(self, notebook):
         """Create compression settings tab."""
@@ -2135,7 +2262,11 @@ class SettingsDialog:
 
             # Update camera settings
             self.settings_manager.update_category('camera', {
-                'index': camera_index
+                'index': camera_index,
+                'auto_exposure': self.auto_exposure_var.get(),
+                'exposure': int(self.exposure_var.get()),
+                'gain': int(self.gain_var.get()),
+                'brightness': int(self.brightness_var.get())
             })
 
             # Update storage settings
