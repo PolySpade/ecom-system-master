@@ -42,6 +42,13 @@ class CameraHandler:
         self.actual_fps = config.VIDEO_FPS
         self.fps_sample_times = deque(maxlen=30)  # Track last 30 frame times
 
+        # Error recovery tracking
+        self._consecutive_failures = 0
+        self._max_failures_before_reinit = 100  # Reinit after 100 failed reads
+        self._reinit_lock = threading.Lock()
+        self._last_reinit_time = 0
+        self._reinit_cooldown = 5.0  # Wait 5 seconds between reinit attempts
+
         self.initialize_camera()
 
     def initialize_camera(self):
@@ -113,21 +120,25 @@ class CameraHandler:
         """Background thread that continuously captures frames from the camera."""
         while self.capture_running:
             if self.camera is None or not self.camera.isOpened():
-                time.sleep(0.01)
+                # Try to reinitialize camera (with cooldown)
+                if time.time() - self._last_reinit_time > self._reinit_cooldown:
+                    self._try_reinitialize_camera()
+                time.sleep(0.1)
                 continue
 
             try:
                 ret, frame = self.camera.read()
                 if ret and frame is not None:
                     current_time = time.time()
+                    self._consecutive_failures = 0  # Reset failure count
 
                     # Update the latest frame for display (thread-safe)
                     with self.frame_lock:
                         self.latest_frame = frame
 
-                    # Track FPS
+                    # Track FPS (only update every 10 frames to reduce overhead)
                     self.fps_sample_times.append(current_time)
-                    if len(self.fps_sample_times) >= 2:
+                    if len(self.fps_sample_times) >= 10:
                         elapsed = self.fps_sample_times[-1] - self.fps_sample_times[0]
                         if elapsed > 0:
                             self.actual_fps = (len(self.fps_sample_times) - 1) / elapsed
@@ -137,12 +148,59 @@ class CameraHandler:
                         with self.buffer_lock:
                             self.frame_buffer.append((frame.copy(), current_time))
                 else:
-                    # Small sleep to avoid spinning on failed reads
-                    time.sleep(0.001)
+                    # Track consecutive failures
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= self._max_failures_before_reinit:
+                        if time.time() - self._last_reinit_time > self._reinit_cooldown:
+                            logger.warning(f"Camera failed {self._consecutive_failures} times, attempting reinit...")
+                            self._try_reinitialize_camera()
+                        self._consecutive_failures = 0
+                    time.sleep(0.033)  # ~30fps when failing
 
             except Exception as e:
                 logger.error(f"Error capturing frame: {e}")
-                time.sleep(0.01)
+                self._consecutive_failures += 1
+                time.sleep(0.033)
+
+    def _try_reinitialize_camera(self):
+        """Attempt to reinitialize the camera after failures."""
+        if not self._reinit_lock.acquire(blocking=False):
+            return  # Another reinit in progress
+
+        try:
+            self._last_reinit_time = time.time()
+            logger.info("Attempting camera reinitialization...")
+
+            # Release existing camera
+            if self.camera is not None:
+                try:
+                    self.camera.release()
+                except:
+                    pass
+                self.camera = None
+                time.sleep(0.3)
+
+            # Reinitialize
+            if platform.system() == 'Windows':
+                self.camera = cv2.VideoCapture(config.CAMERA_INDEX, cv2.CAP_MSMF)
+            else:
+                self.camera = cv2.VideoCapture(config.CAMERA_INDEX)
+
+            if self.camera is not None and self.camera.isOpened():
+                # Reconfigure camera
+                self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, config.VIDEO_RESOLUTION[0])
+                self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, config.VIDEO_RESOLUTION[1])
+                self.camera.set(cv2.CAP_PROP_FPS, config.VIDEO_FPS)
+                self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.apply_exposure_settings()
+                logger.info("Camera reinitialized successfully")
+            else:
+                logger.warning("Camera reinitialization failed - device may be disconnected")
+
+        except Exception as e:
+            logger.error(f"Error during camera reinitialization: {e}")
+        finally:
+            self._reinit_lock.release()
 
     def get_frame(self):
         """Get the current frame from the camera (non-blocking, returns cached frame)."""
@@ -167,7 +225,7 @@ class CameraHandler:
             if self.latest_frame is None:
                 return None
             # Copy frame data while under lock (fast operation)
-            frame = self.latest_frame
+            frame = self.latest_frame.copy()
 
         # Do expensive resize operation outside the lock
         height, width = frame.shape[:2]
@@ -183,7 +241,7 @@ class CameraHandler:
             # Use INTER_NEAREST for fastest downscaling (no interpolation)
             return cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
 
-        return frame.copy()
+        return frame
 
     def get_actual_fps(self):
         """Get the actual measured FPS of the camera."""
@@ -222,21 +280,13 @@ class CameraHandler:
             # 1 or 3 = auto mode (varies by camera)
             if auto_exposure:
                 self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)  # Auto mode
-                logger.info("Camera set to auto-exposure mode")
             else:
                 self.camera.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)  # Manual mode
-
-                # Apply manual exposure value
                 self.camera.set(cv2.CAP_PROP_EXPOSURE, exposure)
-                logger.info(f"Camera exposure set to {exposure}")
 
-            # Apply gain
+            # Apply gain and brightness
             self.camera.set(cv2.CAP_PROP_GAIN, gain)
-            logger.info(f"Camera gain set to {gain}")
-
-            # Apply brightness
             self.camera.set(cv2.CAP_PROP_BRIGHTNESS, brightness)
-            logger.info(f"Camera brightness set to {brightness}")
 
             return True
 

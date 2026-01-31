@@ -16,7 +16,7 @@ from database import Database
 from video_compressor import VideoCompressor
 import config
 from settings_manager import SettingsManager
-from camera_utils import get_available_cameras
+from camera_utils import get_available_cameras, get_available_cameras_fast, refresh_cameras_async
 
 # Configure logging
 os.makedirs(config.LOG_PATH, exist_ok=True)
@@ -32,11 +32,67 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class SavingProgressDialog:
+    """Progress dialog shown while saving recordings."""
+
+    def __init__(self, parent, title="Saving Recording"):
+        self.parent = parent
+        self.cancelled = False
+        self.result = None
+        self.error = None
+
+        # Create dialog
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title(title)
+        self.dialog.transient(parent)
+        self.dialog.resizable(False, False)
+
+        # Prevent closing
+        self.dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        # Center on parent
+        self.dialog.geometry("350x120")
+        self.dialog.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - 350) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - 120) // 2
+        self.dialog.geometry(f"+{x}+{y}")
+
+        # Content
+        frame = ttk.Frame(self.dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        self.status_label = ttk.Label(frame, text="Saving recording...", font=("Arial", 11))
+        self.status_label.pack(pady=(0, 15))
+
+        self.progress = ttk.Progressbar(frame, mode='indeterminate', length=300)
+        self.progress.pack(pady=(0, 10))
+        self.progress.start(10)
+
+        self.detail_label = ttk.Label(frame, text="Writing remaining frames...", font=("Arial", 9), foreground="gray")
+        self.detail_label.pack()
+
+        # Force display
+        self.dialog.update()
+
+    def update_status(self, text, detail=None):
+        """Update the status text."""
+        self.status_label.configure(text=text)
+        if detail:
+            self.detail_label.configure(text=detail)
+        self.dialog.update()
+
+    def close(self):
+        """Close the dialog."""
+        self.progress.stop()
+        self.dialog.destroy()
+
+
 class EcomVideoTrackerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Ecom Video Tracker")
         self.root.geometry("1000x800")
+        self.root.minsize(800, 600)  # Minimum window size
         self.root.resizable(True, True)
 
         # Set window icon (optional - will use default if no icon)
@@ -61,8 +117,15 @@ class EcomVideoTrackerApp:
         self.update_running = True
         self.compression_status = ""  # For displaying compression status
 
+        # Resize handling
+        self._resize_pending = False
+        self._last_size = (0, 0)
+
         # Setup UI
         self.setup_ui()
+
+        # Bind resize event with debouncing
+        self.root.bind('<Configure>', self._on_window_configure)
 
         # Start camera feed
         self.update_camera_feed()
@@ -77,6 +140,30 @@ class EcomVideoTrackerApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         logger.info("GUI Application started")
+
+    def _on_window_configure(self, event):
+        """Handle window resize with debouncing."""
+        # Only handle root window resize events
+        if event.widget != self.root:
+            return
+
+        new_size = (event.width, event.height)
+        if new_size == self._last_size:
+            return
+
+        self._last_size = new_size
+
+        # Debounce: only update after resize stops
+        if not self._resize_pending:
+            self._resize_pending = True
+            self.root.after(100, self._handle_resize)
+
+    def _handle_resize(self):
+        """Handle resize after debounce delay."""
+        self._resize_pending = False
+        # Clear cached container size to force recalculation
+        if hasattr(self, '_cached_container_size'):
+            del self._cached_container_size
 
     def setup_ui(self):
         """Setup the user interface."""
@@ -142,9 +229,8 @@ class EcomVideoTrackerApp:
 
     def create_header(self, parent):
         """Create beautiful gradient header."""
-        header_frame = tk.Frame(parent, bg='#667eea', height=80)
+        header_frame = tk.Frame(parent, bg='#667eea')
         header_frame.grid(row=0, column=0, sticky=(tk.W, tk.E))
-        header_frame.grid_propagate(False)
         header_frame.columnconfigure(0, weight=1)
 
         # Title
@@ -465,12 +551,10 @@ class EcomVideoTrackerApp:
         content = tk.Frame(list_frame, bg='white')
         content.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
 
-        # Scrolled text for recordings
+        # Scrolled text for recordings (no fixed width/height for proper scaling)
         self.recordings_text = scrolledtext.ScrolledText(
             content,
             wrap=tk.WORD,
-            width=40,
-            height=15,
             font=("Courier", 9),
             state=tk.DISABLED,
             bg='#f8f9fa',
@@ -481,9 +565,8 @@ class EcomVideoTrackerApp:
 
     def create_status_bar(self, parent):
         """Create beautiful status bar."""
-        status_frame = tk.Frame(parent, bg='#e5e7eb', height=35)
+        status_frame = tk.Frame(parent, bg='#e5e7eb')
         status_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
-        status_frame.grid_propagate(False)
 
         self.status_bar = tk.Label(
             status_frame,
@@ -502,23 +585,31 @@ class EcomVideoTrackerApp:
             return
 
         try:
-            # Cache container dimensions (only recalculate occasionally)
-            if not hasattr(self, '_cached_container_size') or self._frame_count % 30 == 0:
-                self.camera_container.update_idletasks()
-                container_width = self.camera_container.winfo_width()
-                container_height = self.camera_container.winfo_height()
-
-                # Use minimum dimensions if container not yet sized
-                if container_width < 100:
-                    container_width = 640
-                if container_height < 100:
-                    container_height = 480
-
-                self._cached_container_size = (container_width - 4, container_height - 4)
-
+            # Initialize frame count
             if not hasattr(self, '_frame_count'):
                 self._frame_count = 0
             self._frame_count += 1
+
+            # Cache container dimensions (recalculate every 60 frames or when resize pending)
+            should_recalc = (
+                not hasattr(self, '_cached_container_size') or
+                self._frame_count % 60 == 0 or
+                self._resize_pending
+            )
+
+            if should_recalc:
+                try:
+                    container_width = self.camera_container.winfo_width()
+                    container_height = self.camera_container.winfo_height()
+
+                    # Use minimum dimensions if container not yet sized
+                    if container_width > 100 and container_height > 100:
+                        self._cached_container_size = (container_width - 4, container_height - 4)
+                    elif not hasattr(self, '_cached_container_size'):
+                        self._cached_container_size = (640, 480)
+                except:
+                    if not hasattr(self, '_cached_container_size'):
+                        self._cached_container_size = (640, 480)
 
             max_display_width, max_display_height = self._cached_container_size
 
@@ -526,7 +617,7 @@ class EcomVideoTrackerApp:
             frame = self.camera.get_preview_frame(max_display_width, max_display_height)
 
             if frame is not None:
-                # Convert BGR to RGB using efficient method
+                # Convert BGR to RGB
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 # Convert to PIL Image and PhotoImage
@@ -542,7 +633,7 @@ class EcomVideoTrackerApp:
             pass
 
         # Schedule next update (33ms = ~30 FPS display rate - reduces CPU load while still smooth)
-        self.root.after(1, self.update_camera_feed)
+        self.root.after(33, self.update_camera_feed)
 
     def update_status(self):
         """Update status information."""
@@ -617,63 +708,133 @@ class EcomVideoTrackerApp:
                 self.update_ui_recording(True, filename, selected_label)
                 self.set_status_bar(f"Recording started: {result['barcode']} ({selected_label})", "success")
 
+                # Clear input
+                self.barcode_entry.delete(0, tk.END)
+                self.barcode_entry.focus()
+
             elif result['action'] == 'stop_and_start':
-                # Stop current recording
-                recording_info = self.camera.stop_recording()
+                # Stop and start new recording - use progress dialog
+                def on_stop_complete(recording_info):
+                    if recording_info:
+                        # Start new recording
+                        try:
+                            new_filename = self.camera.start_recording(result['barcode'], selected_label)
+                            self.current_transaction_id = self.db.create_transaction(result['barcode'], new_filename, selected_label)
 
-                # Update database for completed recording
-                previous_transaction_id = self.current_transaction_id
-                if self.current_transaction_id:
-                    self.db.complete_transaction(
-                        self.current_transaction_id,
-                        recording_info['duration'],
-                        recording_info['file_size_mb'],
-                        'barcode'
-                    )
-                    # Queue compression for completed video
-                    self.queue_video_compression(
-                        recording_info['filename'],
-                        previous_transaction_id,
-                        recording_info.get('label_folder', 'Normal')
-                    )
+                            # Update UI
+                            self.recording_start_time = time.time()
+                            self.update_ui_recording(True, new_filename, selected_label)
+                            self.set_status_bar(
+                                f"Switched to: {result['barcode']} ({selected_label}) (Saved: {recording_info['duration']}s)",
+                                "success"
+                            )
+                            self.load_recordings()
+                        except Exception as e:
+                            logger.error(f"Error starting new recording: {e}")
+                            messagebox.showerror("Error", f"Failed to start new recording: {str(e)}")
 
-                # Immediately start new recording with this barcode and label
-                new_filename = self.camera.start_recording(result['barcode'], selected_label)
+                    self.barcode_entry.delete(0, tk.END)
+                    self.barcode_entry.focus()
 
-                # Create new database transaction with label
-                self.current_transaction_id = self.db.create_transaction(result['barcode'], new_filename, selected_label)
-
-                # Update UI
-                self.recording_start_time = time.time()
-                self.update_ui_recording(True, new_filename, selected_label)
-                self.set_status_bar(
-                    f"Switched to new recording: {result['barcode']} ({selected_label}) (Previous: {recording_info['duration']}s)",
-                    "success"
-                )
-
-                # Reload recordings list
-                self.load_recordings()
+                self._stop_recording_with_progress('barcode', on_stop_complete)
 
             elif result['action'] == 'stop':
-                # Stop recording
+                # Stop recording with progress dialog
+                def on_stop_complete(recording_info):
+                    if recording_info:
+                        self.recording_start_time = None
+                        self.current_transaction_id = None
+                        self.update_ui_recording(False)
+                        self.set_status_bar(
+                            f"Recording stopped: {recording_info['duration']}s, {recording_info['file_size_mb']:.2f}MB",
+                            "success"
+                        )
+                        self.load_recordings()
+
+                    self.barcode_entry.delete(0, tk.END)
+                    self.barcode_entry.focus()
+
+                self._stop_recording_with_progress('barcode', on_stop_complete)
+
+        except Exception as e:
+            logger.error(f"Error processing barcode: {e}")
+            messagebox.showerror("Error", f"Failed to process barcode: {str(e)}")
+
+    def _stop_recording_with_progress(self, stop_type='manual', callback=None):
+        """
+        Stop recording with a progress dialog to prevent UI freeze.
+
+        Args:
+            stop_type: 'manual' or 'barcode' for database logging
+            callback: Optional function to call with recording_info when done
+        """
+        if not self.camera.is_recording():
+            if callback:
+                callback(None)
+            return
+
+        # Show progress dialog
+        progress = SavingProgressDialog(self.root, "Saving Recording")
+
+        def do_stop():
+            try:
+                # Stop recording (this can take time if buffer has frames)
                 recording_info = self.camera.stop_recording()
+                progress.result = recording_info
+            except Exception as e:
+                progress.error = str(e)
+                logger.error(f"Error stopping recording: {e}")
 
-                # Update database
-                completed_transaction_id = self.current_transaction_id
-                if self.current_transaction_id:
-                    self.db.complete_transaction(
-                        self.current_transaction_id,
-                        recording_info['duration'],
-                        recording_info['file_size_mb'],
-                        'barcode'
-                    )
-                    # Queue compression for completed video
-                    self.queue_video_compression(
-                        recording_info['filename'],
-                        completed_transaction_id,
-                        recording_info.get('label_folder', 'Normal')
-                    )
+        def check_complete():
+            if thread.is_alive():
+                # Still running, check again
+                self.root.after(50, check_complete)
+            else:
+                # Done - close dialog and process result
+                progress.close()
 
+                if progress.error:
+                    messagebox.showerror("Error", f"Failed to save recording: {progress.error}")
+                    if callback:
+                        callback(None)
+                    return
+
+                recording_info = progress.result
+                if recording_info:
+                    # Update database
+                    completed_transaction_id = self.current_transaction_id
+                    if self.current_transaction_id:
+                        self.db.complete_transaction(
+                            self.current_transaction_id,
+                            recording_info['duration'],
+                            recording_info['file_size_mb'],
+                            stop_type
+                        )
+                        # Queue compression
+                        self.queue_video_compression(
+                            recording_info['filename'],
+                            completed_transaction_id,
+                            recording_info.get('label_folder', 'Normal')
+                        )
+
+                if callback:
+                    callback(recording_info)
+
+        # Start stop in background thread
+        thread = threading.Thread(target=do_stop, daemon=True)
+        thread.start()
+
+        # Check for completion
+        self.root.after(50, check_complete)
+
+    def manual_stop(self):
+        """Manually stop recording."""
+        if not self.camera.is_recording():
+            messagebox.showwarning("Not Recording", "No recording in progress")
+            return
+
+        def on_stop_complete(recording_info):
+            if recording_info:
                 # Update UI
                 self.recording_start_time = None
                 self.current_transaction_id = None
@@ -682,60 +843,11 @@ class EcomVideoTrackerApp:
                     f"Recording stopped: {recording_info['duration']}s, {recording_info['file_size_mb']:.2f}MB",
                     "success"
                 )
-
                 # Reload recordings list
                 self.load_recordings()
-
-            # Clear input
-            self.barcode_entry.delete(0, tk.END)
             self.barcode_entry.focus()
 
-        except Exception as e:
-            logger.error(f"Error processing barcode: {e}")
-            messagebox.showerror("Error", f"Failed to process barcode: {str(e)}")
-
-    def manual_stop(self):
-        """Manually stop recording."""
-        try:
-            if not self.camera.is_recording():
-                messagebox.showwarning("Not Recording", "No recording in progress")
-                return
-
-            # Stop recording
-            recording_info = self.camera.stop_recording()
-
-            # Update database
-            completed_transaction_id = self.current_transaction_id
-            if self.current_transaction_id:
-                self.db.complete_transaction(
-                    self.current_transaction_id,
-                    recording_info['duration'],
-                    recording_info['file_size_mb'],
-                    'manual'
-                )
-                # Queue compression for completed video
-                self.queue_video_compression(
-                    recording_info['filename'],
-                    completed_transaction_id,
-                    recording_info.get('label_folder', 'Normal')
-                )
-
-            # Update UI
-            self.recording_start_time = None
-            self.current_transaction_id = None
-            self.update_ui_recording(False)
-            self.set_status_bar(
-                f"Recording stopped manually: {recording_info['duration']}s, {recording_info['file_size_mb']:.2f}MB",
-                "success"
-            )
-
-            # Reload recordings list
-            self.load_recordings()
-            self.barcode_entry.focus()
-
-        except Exception as e:
-            logger.error(f"Error stopping recording: {e}")
-            messagebox.showerror("Error", f"Failed to stop recording: {str(e)}")
+        self._stop_recording_with_progress('manual', on_stop_complete)
 
     def update_ui_recording(self, recording, filename="-", label=None):
         """Update UI based on recording state."""
@@ -976,8 +1088,9 @@ class SearchWindow:
 
         # Create window
         self.window = tk.Toplevel(parent)
-        self.window.title("🔍 Search Recordings - Ecom Video Tracker")
+        self.window.title("Search Recordings - Ecom Video Tracker")
         self.window.geometry("1000x700")
+        self.window.minsize(700, 500)
         self.window.transient(parent)
 
         # Center window
@@ -1553,9 +1666,10 @@ class SettingsDialog:
         # Create dialog window
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Settings - Ecom Video Tracker")
-        self.dialog.resizable(False, False)
+        self.dialog.resizable(True, True)
+        self.dialog.minsize(450, 400)
         self.dialog.transient(parent)
-        self.dialog.grab_set()
+        # Don't use grab_set() - it causes UI lag with continuous camera updates
 
         # Load current settings
         self.current_settings = settings_manager.get_all()
@@ -1721,8 +1835,8 @@ class SettingsDialog:
             row=0, column=0, sticky=tk.W, pady=(0, 3)
         )
 
-        # Get available cameras
-        self.available_cameras = get_available_cameras()
+        # Get available cameras (use fast method to avoid lag)
+        self.available_cameras = get_available_cameras_fast()
 
         camera_frame = ttk.Frame(tab)
         camera_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
@@ -1880,15 +1994,19 @@ class SettingsDialog:
             self._apply_live_exposure()
 
     def _on_exposure_change(self):
-        """Handle exposure slider changes."""
-        # Update value labels
+        """Handle exposure slider changes with throttling."""
+        # Update value labels immediately
         self.exposure_value_label.configure(text=f"{int(self.exposure_var.get())}")
         self.gain_value_label.configure(text=f"{int(self.gain_var.get())}")
         self.brightness_value_label.configure(text=f"{int(self.brightness_var.get())}")
 
-        # Apply to camera if live preview is enabled
+        # Throttle camera updates to avoid lag
         if hasattr(self, 'live_preview_var') and self.live_preview_var.get():
-            self._apply_live_exposure()
+            # Cancel any pending exposure update
+            if hasattr(self, '_exposure_update_id') and self._exposure_update_id:
+                self.dialog.after_cancel(self._exposure_update_id)
+            # Schedule update after 100ms of no changes
+            self._exposure_update_id = self.dialog.after(100, self._apply_live_exposure)
 
     def _apply_live_exposure(self):
         """Apply exposure settings to camera in real-time."""
@@ -2164,56 +2282,52 @@ class SettingsDialog:
             var.set(filename)
 
     def refresh_cameras(self):
-        """Refresh the list of available cameras."""
-        try:
-            # Re-enumerate cameras
-            self.available_cameras = get_available_cameras()
+        """Refresh the list of available cameras in background."""
+        # Show refreshing status
+        self.camera_var.set("Refreshing cameras...")
 
-            # Rebuild camera options
-            camera_options = []
-            current_selection = self.camera_var.get()
-            current_index = None
+        def on_cameras_found(cameras):
+            """Callback when camera detection completes."""
+            try:
+                self.available_cameras = cameras
 
-            # Try to extract current index from selection
-            if "(Index " in current_selection:
-                try:
-                    start = current_selection.index("(Index ") + 7
-                    end = current_selection.index(")", start)
-                    current_index = int(current_selection[start:end])
-                except:
-                    pass
+                # Rebuild camera options
+                camera_options = []
+                current_index = self.current_settings['camera']['index']
+                selected_option = None
 
-            selected_option = None
+                for cam in cameras:
+                    status = "✓" if cam['working'] else "✗"
+                    option = f"{status} {cam['name']} (Index {cam['index']}) - {cam['resolution']}"
+                    camera_options.append(option)
 
-            for cam in self.available_cameras:
-                status = "✓" if cam['working'] else "✗"
-                option = f"{status} {cam['name']} (Index {cam['index']}) - {cam['resolution']}"
-                camera_options.append(option)
+                    if cam['index'] == current_index:
+                        selected_option = option
 
-                if current_index is not None and cam['index'] == current_index:
-                    selected_option = option
+                if selected_option is None and camera_options:
+                    selected_option = camera_options[0]
 
-            if selected_option is None and camera_options:
-                selected_option = camera_options[0]
+                # Update combobox (schedule on main thread)
+                def update_ui():
+                    for widget in self.dialog.winfo_children():
+                        if isinstance(widget, ttk.Notebook):
+                            notebook = widget
+                            camera_tab = notebook.nametowidget(notebook.tabs()[1])
+                            for child in camera_tab.winfo_children():
+                                if isinstance(child, ttk.Frame):
+                                    for subchild in child.winfo_children():
+                                        if isinstance(subchild, ttk.Combobox):
+                                            subchild['values'] = camera_options
+                                            self.camera_var.set(selected_option if selected_option else "No cameras detected")
+                                            break
 
-            # Update combobox
-            for widget in self.dialog.winfo_children():
-                if isinstance(widget, ttk.Notebook):
-                    notebook = widget
-                    camera_tab = notebook.nametowidget(notebook.tabs()[1])  # Camera tab is second
-                    for child in camera_tab.winfo_children():
-                        if isinstance(child, ttk.Frame):
-                            for subchild in child.winfo_children():
-                                if isinstance(subchild, ttk.Combobox):
-                                    subchild['values'] = camera_options
-                                    self.camera_var.set(selected_option if selected_option else "No cameras detected")
-                                    break
+                self.dialog.after(0, update_ui)
 
-            messagebox.showinfo("Cameras Refreshed", f"Found {len(self.available_cameras)} camera(s)")
+            except Exception as e:
+                logger.error(f"Error updating camera list: {e}")
 
-        except Exception as e:
-            logger.error(f"Error refreshing cameras: {e}")
-            messagebox.showerror("Error", f"Failed to refresh cameras: {str(e)}")
+        # Run detection in background
+        refresh_cameras_async(callback=on_cameras_found)
 
     def reset_defaults(self):
         """Reset settings to defaults."""
@@ -2294,30 +2408,55 @@ class SettingsDialog:
 
             # Save to file
             if self.settings_manager.save_settings():
+                # Close dialog first
                 self.dialog.destroy()
 
-                # Reinitialize camera with new settings
-                try:
-                    self.main_app.camera.reinitialize()
-                    messagebox.showinfo(
-                        "Settings Saved",
-                        "Settings have been saved successfully.\n\n"
-                        "Camera has been restarted with new settings."
-                    )
-                except Exception as cam_error:
-                    logger.error(f"Error reinitializing camera: {cam_error}")
-                    messagebox.showwarning(
-                        "Settings Saved",
-                        "Settings have been saved successfully.\n\n"
-                        "However, the camera could not be restarted automatically.\n"
-                        "Please restart the application manually."
-                    )
+                # Reinitialize camera in background with progress
+                self._reinitialize_camera_async()
             else:
                 messagebox.showerror("Error", "Failed to save settings")
 
         except Exception as e:
             logger.error(f"Error saving settings: {e}")
             messagebox.showerror("Error", f"Failed to save settings: {str(e)}")
+
+    def _reinitialize_camera_async(self):
+        """Reinitialize camera in background with progress dialog."""
+        # Show progress dialog
+        progress = SavingProgressDialog(self.main_app.root, "Applying Settings")
+        progress.update_status("Restarting camera...", "Please wait...")
+
+        result = {'success': False, 'error': None}
+
+        def do_reinit():
+            try:
+                self.main_app.camera.reinitialize()
+                result['success'] = True
+            except Exception as e:
+                result['error'] = str(e)
+                logger.error(f"Error reinitializing camera: {e}")
+
+        def check_complete():
+            if thread.is_alive():
+                self.main_app.root.after(50, check_complete)
+            else:
+                progress.close()
+                if result['success']:
+                    messagebox.showinfo(
+                        "Settings Saved",
+                        "Settings saved and camera restarted."
+                    )
+                else:
+                    messagebox.showwarning(
+                        "Settings Saved",
+                        f"Settings saved but camera restart failed.\n\n"
+                        f"Error: {result['error']}\n\n"
+                        "Please restart the application."
+                    )
+
+        thread = threading.Thread(target=do_reinit, daemon=True)
+        thread.start()
+        self.main_app.root.after(50, check_complete)
 
 
 def main():
