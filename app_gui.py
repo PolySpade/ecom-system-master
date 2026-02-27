@@ -2129,6 +2129,26 @@ class SettingsDialog:
         )
         delete_check.grid(row=10, column=0, sticky=tk.W, pady=(0, 10))
 
+        # Process Priority
+        ttk.Label(tab, text="Process Priority:", font=("Arial", 10, "bold")).grid(
+            row=11, column=0, sticky=tk.W, pady=(0, 3)
+        )
+
+        self.compression_priority_var = tk.StringVar(value=compression_settings.get('priority', 'below_normal'))
+        priority_combo = ttk.Combobox(
+            tab,
+            textvariable=self.compression_priority_var,
+            values=['low', 'below_normal', 'normal'],
+            state='readonly',
+            width=20
+        )
+        priority_combo.grid(row=12, column=0, sticky=tk.W, pady=(0, 10))
+
+        ttk.Label(
+            tab, text="Lower priority = Less system impact during compression",
+            font=("Arial", 8), foreground="gray"
+        ).grid(row=13, column=0, sticky=tk.W, pady=(0, 10))
+
     def _check_ffmpeg_status(self):
         """Check and update FFmpeg status label."""
         try:
@@ -2403,7 +2423,8 @@ class SettingsDialog:
                 'codec': self.compression_codec_var.get(),
                 'crf': int(self.compression_crf_var.get()),
                 'preset': self.compression_preset_var.get(),
-                'delete_original': self.compression_delete_original_var.get()
+                'delete_original': self.compression_delete_original_var.get(),
+                'priority': self.compression_priority_var.get()
             })
 
             # Save to file

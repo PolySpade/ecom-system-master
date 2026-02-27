@@ -14,6 +14,13 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# Windows process priority flags
+PRIORITY_FLAGS = {
+    'low': 0x00000040,         # IDLE_PRIORITY_CLASS
+    'below_normal': 0x00004000, # BELOW_NORMAL_PRIORITY_CLASS
+    'normal': 0x00000020        # NORMAL_PRIORITY_CLASS
+}
+
 
 class CompressionStatus(Enum):
     """Status of compression jobs."""
@@ -355,6 +362,7 @@ class VideoCompressor:
         codec = settings.get('codec', 'h264')
         crf = settings.get('crf', 23)
         preset = settings.get('preset', 'medium')
+        priority = settings.get('priority', 'below_normal')
 
         # Build FFmpeg command
         ffmpeg_cmd = self._ffmpeg_path or 'ffmpeg'
@@ -379,7 +387,7 @@ class VideoCompressor:
             job.output_path
         ]
 
-        logger.info(f"Running FFmpeg command (low priority): {' '.join(cmd)}")
+        logger.info(f"Running FFmpeg command (priority: {priority}): {' '.join(cmd)}")
         logger.info(f"Input file: {job.video_path} (exists: {os.path.isfile(job.video_path)})")
         logger.info(f"Output file: {job.output_path}")
 
@@ -389,8 +397,8 @@ class VideoCompressor:
             startupinfo = None
             if os.name == 'nt':
                 # CREATE_NO_WINDOW = 0x08000000 (hide console window)
-                # BELOW_NORMAL_PRIORITY_CLASS = 0x00004000 (low priority)
-                creationflags = 0x08000000 | 0x00004000
+                priority_flag = PRIORITY_FLAGS.get(priority, 0x00004000)
+                creationflags = 0x08000000 | priority_flag
 
                 # Also use startupinfo to ensure no window
                 startupinfo = subprocess.STARTUPINFO()

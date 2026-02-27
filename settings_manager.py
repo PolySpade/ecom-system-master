@@ -41,7 +41,8 @@ class SettingsManager:
             'codec': 'h264',       # 'h264' or 'h265'
             'crf': 23,             # 18-35 (lower = better quality)
             'preset': 'medium',    # ultrafast/fast/medium/slow
-            'delete_original': True  # Delete original after successful compression
+            'delete_original': True,  # Delete original after successful compression
+            'priority': 'below_normal'  # 'low', 'below_normal', or 'normal'
         }
     }
 
