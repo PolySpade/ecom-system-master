@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ecom Video Tracker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header with Settings Button -->
+        <header class="app-header">
+            <h1>Ecom Video Tracker</h1>
+            <button id="settingsButton" class="btn btn-secondary">⚙️ Settings</button>
+        </header>
+
+        <main>
+            <!-- Camera Feed Section -->
+            <section class="camera-section">
+                <div class="camera-container">
+                    <img id="cameraFeed" src="{{ url_for('video_feed') }}" alt="Camera Feed">
+                    <div id="recordingIndicator" class="recording-indicator hidden">
+                        <span class="rec-dot"></span>
+                        <span class="rec-text">RECORDING</span>
+                        <span id="recordingDuration" class="rec-duration">00:00</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Control Section -->
+            <section class="control-section">
+                <div class="barcode-input-group">
+                    <label for="barcodeInput">Scan or Enter Barcode:</label>
+                    <div class="input-row">
+                        <input
+                            type="text"
+                            id="barcodeInput"
+                            placeholder="Enter barcode (e.g., DEVICE001 or STOP_001)"
+                            autofocus
+                        >
+                        <button id="submitBarcode" class="btn btn-primary">Submit</button>
+                    </div>
+                    <p class="help-text">
+                        Scan continuously: Each barcode stops the previous recording and starts a new one.
+                    </p>
+                </div>
+
+                <div class="button-group">
+                    <button id="stopButton" class="btn btn-danger" disabled>
+                        Stop Recording (Manual)
+                    </button>
+                </div>
+
+                <div id="statusMessage" class="status-message"></div>
+            </section>
+
+            <!-- Storage Info Section -->
+            <section class="info-section">
+                <div class="info-card">
+                    <h3>System Status</h3>
+                    <div class="info-row">
+                        <span>Status:</span>
+                        <span id="systemStatus" class="status-idle">Idle</span>
+                    </div>
+                    <div class="info-row">
+                        <span>Current File:</span>
+                        <span id="currentFilename">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span>Storage Used:</span>
+                        <span id="storageUsed">0 MB</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Search Section - Button Only -->
+            <section class="search-section">
+                <button id="searchRecordingsButton" class="btn btn-primary btn-large">🔍 Search Recordings</button>
+            </section>
+
+            <!-- Recent Recordings Section -->
+            <section class="recordings-section">
+                <h2>Recent Recordings</h2>
+                <div id="recordingsList" class="recordings-list">
+                    <p class="loading">Loading recordings...</p>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Ecom Video Tracker &copy; 2025</p>
+        </footer>
+    </div>
+
+    <!-- Search Recordings Modal -->
+    <div id="searchModal" class="search-modal hidden">
+        <div class="search-modal-content">
+            <div class="search-modal-header">
+                <h2>🔍 Search Recordings</h2>
+                <button class="modal-close" onclick="closeSearchModal()">&times;</button>
+            </div>
+            <div class="search-modal-body">
+                <!-- Search Filters Card -->
+                <div class="search-filters-card">
+                    <div class="filter-row">
+                        <div class="filter-field">
+                            <label for="searchInput">📦 Barcode:</label>
+                            <input type="text" id="searchInput" placeholder="Enter barcode...">
+                        </div>
+
+                        <div class="filter-field">
+                            <label for="startDateInput">📅 Start Date:</label>
+                            <input type="date" id="startDateInput">
+                        </div>
+
+                        <div class="filter-field">
+                            <label for="endDateInput">📅 End Date:</label>
+                            <input type="date" id="endDateInput">
+                        </div>
+                    </div>
+
+                    <div class="filter-row">
+                        <div class="filter-field">
+                            <label for="sortBySelect">🔄 Sort By:</label>
+                            <select id="sortBySelect">
+                                <option value="created_at">Date (Newest First)</option>
+                                <option value="created_at_asc">Date (Oldest First)</option>
+                                <option value="barcode">Barcode (A-Z)</option>
+                                <option value="duration_seconds">Duration</option>
+                                <option value="file_size_mb">File Size</option>
+                            </select>
+                        </div>
+
+                        <div class="filter-field">
+                            <label for="limitSelect">📄 Results Per Page:</label>
+                            <select id="limitSelect">
+                                <option value="10">10</option>
+                                <option value="20" selected>20</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="filter-actions-row">
+                        <button id="searchButton" class="btn btn-primary btn-search-large">🔍 Search</button>
+                        <button id="clearFiltersButton" class="btn btn-secondary btn-search-large">✕ Clear Filters</button>
+                    </div>
+                </div>
+
+                <!-- Search Results Info -->
+                <div id="searchResultsInfo" class="search-results-info hidden">
+                    <span id="searchResultsCount"></span>
+                    <div id="searchPagination" class="search-pagination"></div>
+                </div>
+
+                <!-- Search Results Area -->
+                <div id="searchResultsArea" class="search-results-area">
+                    <div id="searchResults" class="search-results-grid">
+                        <p class="search-placeholder">🔍 Enter search criteria and click Search to find recordings</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="settings-modal hidden">
+        <div class="settings-modal-content">
+            <div class="settings-modal-header">
+                <h2>⚙️ Settings</h2>
+                <button class="modal-close" onclick="closeSettingsModal()">&times;</button>
+            </div>
+            <div class="settings-modal-body">
+                <!-- Tabs -->
+                <div class="settings-tabs">
+                    <button class="settings-tab active" data-tab="video">Video</button>
+                    <button class="settings-tab" data-tab="camera">Camera</button>
+                    <button class="settings-tab" data-tab="compression">Compression</button>
+                    <button class="settings-tab" data-tab="storage">Storage</button>
+                    <button class="settings-tab" data-tab="app">App</button>
+                </div>
+
+                <!-- Video Settings Tab -->
+                <div id="videoTab" class="settings-tab-content active">
+                    <h3>Video Settings</h3>
+
+                    <div class="settings-field">
+                        <label for="resolutionSelect">Resolution:</label>
+                        <select id="resolutionSelect" class="settings-select">
+                            <option value="640,480">640x480</option>
+                            <option value="1280,720">1280x720 (HD)</option>
+                            <option value="1920,1080">1920x1080 (Full HD)</option>
+                            <option value="2560,1440">2560x1440 (2K)</option>
+                            <option value="3840,2160">3840x2160 (4K)</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="fpsSelect">FPS (Frames Per Second):</label>
+                        <select id="fpsSelect" class="settings-select">
+                            <option value="15">15 FPS</option>
+                            <option value="24">24 FPS</option>
+                            <option value="30">30 FPS</option>
+                            <option value="60">60 FPS</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="codecSelect">Video Codec:</label>
+                        <select id="codecSelect" class="settings-select">
+                            <option value="mp4v">MP4V (Recommended)</option>
+                            <option value="avc1">H264</option>
+                            <option value="XVID">XVID</option>
+                            <option value="MJPG">MJPEG</option>
+                        </select>
+                    </div>
+
+                    <p class="settings-note">Note: Changes apply after restarting the application. Higher resolution and FPS require more storage space.</p>
+                </div>
+
+                <!-- Camera Settings Tab -->
+                <div id="cameraTab" class="settings-tab-content">
+                    <h3>Camera Settings</h3>
+
+                    <div class="settings-field">
+                        <label for="cameraSelect">Select Camera:</label>
+                        <select id="cameraSelect" class="settings-select">
+                            <option value="0">Loading cameras...</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <button type="button" class="btn btn-secondary" onclick="refreshCameras()">🔄 Refresh Cameras</button>
+                    </div>
+
+                    <p class="settings-note">
+                        Camera Selection Help:<br>
+                        • ✓ = Camera is working and detected<br>
+                        • ✗ = Camera detected but not responding<br>
+                        • Choose the camera you want to use for recording<br><br>
+                        If your camera doesn't appear, try clicking 'Refresh Cameras'.<br>
+                        Changes will be applied immediately after saving (no restart required).
+                    </p>
+                </div>
+
+                <!-- Compression Settings Tab -->
+                <div id="compressionTab" class="settings-tab-content">
+                    <h3>Video Compression Settings</h3>
+
+                    <div class="settings-field ffmpeg-status-field">
+                        <label>FFmpeg Status:</label>
+                        <div id="ffmpegStatus" class="ffmpeg-status">
+                            <span class="status-checking">Checking FFmpeg...</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-field">
+                        <label>
+                            <input type="checkbox" id="compressionEnabled">
+                            Enable automatic video compression after recording
+                        </label>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="compressionCodecSelect">Compression Codec:</label>
+                        <select id="compressionCodecSelect" class="settings-select">
+                            <option value="h264">H.264 (Recommended - Better compatibility)</option>
+                            <option value="h265">H.265/HEVC (Better compression, slower)</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="compressionCrfSlider">Quality (CRF): <span id="crfValue">23</span></label>
+                        <input type="range" id="compressionCrfSlider" class="settings-slider" min="18" max="35" value="23">
+                        <div class="slider-labels">
+                            <span>Higher Quality</span>
+                            <span>Smaller File</span>
+                        </div>
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="compressionPresetSelect">Encoding Speed:</label>
+                        <select id="compressionPresetSelect" class="settings-select">
+                            <option value="ultrafast">Ultra Fast (Larger files)</option>
+                            <option value="fast">Fast</option>
+                            <option value="medium">Medium (Recommended)</option>
+                            <option value="slow">Slow (Better compression)</option>
+                        </select>
+                    </div>
+
+                    <div class="settings-field">
+                        <label>
+                            <input type="checkbox" id="deleteOriginalCheck" checked>
+                            Delete original file after successful compression
+                        </label>
+                    </div>
+
+                    <p class="settings-note">
+                        Compression Settings Help:<br>
+                        • CRF 18-23 = High quality, larger files<br>
+                        • CRF 24-28 = Good quality, balanced size<br>
+                        • CRF 29-35 = Lower quality, smaller files<br><br>
+                        FFmpeg must be installed on your system for compression to work.
+                        <a href="https://ffmpeg.org/download.html" target="_blank">Download FFmpeg</a>
+                    </p>
+                </div>
+
+                <!-- Storage Settings Tab -->
+                <div id="storageTab" class="settings-tab-content">
+                    <h3>Storage Settings</h3>
+
+                    <div class="settings-field">
+                        <label for="videoPathInput">Video Storage Path:</label>
+                        <input type="text" id="videoPathInput" class="settings-input" placeholder="videos">
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="dbPathInput">Database Path:</label>
+                        <input type="text" id="dbPathInput" class="settings-input" placeholder="database.db">
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="logPathInput">Log Storage Path:</label>
+                        <input type="text" id="logPathInput" class="settings-input" placeholder="logs">
+                    </div>
+
+                    <p class="settings-note">
+                        Note: Use relative paths (e.g., 'videos') or absolute paths. Changing these paths requires restarting the application.
+                    </p>
+                </div>
+
+                <!-- App Settings Tab -->
+                <div id="appTab" class="settings-tab-content">
+                    <h3>Application Settings</h3>
+
+                    <div class="settings-field">
+                        <label for="flaskHostInput">Flask Host:</label>
+                        <input type="text" id="flaskHostInput" class="settings-input" placeholder="0.0.0.0">
+                    </div>
+
+                    <div class="settings-field">
+                        <label for="flaskPortInput">Flask Port:</label>
+                        <input type="number" id="flaskPortInput" class="settings-input" min="1024" max="65535" placeholder="5000">
+                    </div>
+
+                    <div class="settings-field">
+                        <label>
+                            <input type="checkbox" id="debugModeCheck">
+                            Enable Debug Mode (for development)
+                        </label>
+                    </div>
+
+                    <p class="settings-note">
+                        Flask Settings:<br>
+                        • Host 0.0.0.0 = accessible from network<br>
+                        • Host 127.0.0.1 = localhost only<br>
+                        • Default port: 5000<br><br>
+                        These settings apply to the web application version.
+                    </p>
+                </div>
+            </div>
+
+            <!-- Modal Footer with Buttons -->
+            <div class="settings-modal-footer">
+                <button class="btn btn-secondary" onclick="resetSettings()">Reset to Defaults</button>
+                <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSettings()">Save & Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
