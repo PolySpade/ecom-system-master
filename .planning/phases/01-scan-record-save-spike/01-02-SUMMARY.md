@@ -104,3 +104,7 @@ None - all work in this plan is Linux-verifiable (`flutter analyze`, `flutter te
 ---
 *Phase: 01-scan-record-save-spike*
 *Completed: 2026-07-11*
+
+## Self-Check: PASSED
+
+All created files verified present on disk (`barcode_listener.dart`, `barcode_listener_test.dart`); both task commits (`a7d4a64`, `2aed49a`) verified present in git log.
