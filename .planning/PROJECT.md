@@ -47,6 +47,7 @@ The continuous scan → record → save loop must work flawlessly: every scanned
 - **Prior port attempt:** A Qt6/C++ port was started and abandoned (removed in commit `6dd8a66`) — C++ development was too slow/complex. Flutter is the second attempt at replacing Tkinter.
 - **Known flaws in the reference app that the port should NOT replicate** (from `.planning/codebase/CONCERNS.md`): business-logic duplication between Flask and Tkinter frontends, SQLite connection-leak patterns, delete-then-rename data-loss risk in the video compressor (compress to temp file and atomically swap instead), no disk-space guard for long-running use.
 - **Hardware:** USB barcode scanners acting as keyboard wedges (scan = fast keystrokes + Enter); standard USB/built-in webcams.
+- **Dev/test environments:** primary development happens on Donald's Linux machine; a Windows machine is available for `flutter build windows`, the camera/scanner hardware spike, and all Windows-specific validation. Plans should split work accordingly (cross-platform code developed on Linux, hardware/release verification on Windows).
 - **The hard technical problem:** camera capture + video encoding on Windows in Flutter. Flutter's official camera plugin support on Windows is limited (preview yes, but recording support is weak). Expect this to need dedicated research (options: `camera_windows`, FFI to native capture, FFmpeg-based recording pipeline).
 
 ## Constraints
