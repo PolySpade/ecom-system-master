@@ -437,22 +437,22 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 **If this table is empty:** N/A — table is populated; the two highest-priority assumptions (A1, A2) are exactly the two things this phase's success criteria require the team to empirically resolve, which is by design given this is a spike phase.
 
-## Open Questions
+## Open Questions (RESOLVED via Plan 01-03 checkpoints)
 
 1. **What specific webcam and barcode scanner hardware models will be used for the Windows validation spike?**
    - What we know: A Windows 10/11 machine is available for builds/hardware testing (per project memory); the Python reference app uses OpenCV's MSMF backend and supports arbitrary USB webcams generically.
    - What's unclear: No specific hardware model (webcam brand/model, scanner brand/model) is named anywhere in `PROJECT.md`, `ROADMAP.md`, `REQUIREMENTS.md`, or `STATE.md` read during this research.
-   - Recommendation: Planner should add a Phase 1 task to confirm/procure the exact hardware before the spike tasks are scheduled — testing against "whatever webcam happens to be plugged into the Windows machine" is a legitimate first pass, but the roadmap's own language ("validated against real target webcam hardware") implies a specific target device matters.
+   - Recommendation: Planner should add a Phase 1 task to confirm/procure the exact hardware before the spike tasks are scheduled — testing against "whatever webcam happens to be plugged into the Windows machine" is a legitimate first pass, but the roadmap's own language ("validated against real target webcam hardware") implies a specific target device matters. Routed to: Plan 01-03 Task 1 (hardware confirmation checkpoint).
 
 2. **Is issue #160786 (HardwareKeyboard stops firing after TextField focus) present on Flutter 3.41.6?**
    - What we know: Reported against 3.27.1/3.28 as a regression from 3.24.5; the project's installed version (3.41.6) is considerably later and the issue thread does not confirm a fix version.
    - What's unclear: Whether the underlying regression was fixed somewhere between 3.28 and 3.41.6, is still present, or has changed shape.
-   - Recommendation: First concrete Phase 1 task — write a minimal test harness (a bare Flutter Windows app with one `TextField` and a `HardwareKeyboard` handler logging every event) and manually verify on the actual dev/Windows machine before investing in the full barcode-buffer logic.
+   - Recommendation: First concrete Phase 1 task — write a minimal test harness (a bare Flutter Windows app with one `TextField` and a `HardwareKeyboard` handler logging every event) and manually verify on the actual dev/Windows machine before investing in the full barcode-buffer logic. Routed to: Plan 01-03 Task 3 (focus-independence checkpoint; primary handler + Focus-wrapper fallback built in Plan 01-02 Task 1).
 
 3. **What is the actual latency/frame-loss profile of `stopVideoRecording()` → `startVideoRecording()`?**
    - What we know: The `camera` package documents the method signatures and return types; no source documents timing or reliability across rapid cycles.
    - What's unclear: Whether there's a safe minimum delay, and whether any delay is even necessary.
-   - Recommendation: Build the minimal record/stop/record loop as literally the first working code in this phase, instrument it with timestamps and frame counts, and run it dozens of times before building any surrounding UI — exactly as the roadmap already directs ("literal first work item").
+   - Recommendation: Build the minimal record/stop/record loop as literally the first working code in this phase, instrument it with timestamps and frame counts, and run it dozens of times before building any surrounding UI — exactly as the roadmap already directs ("literal first work item"). Routed to: Plan 01-03 Task 2 (back-to-back stop→start reliability/latency checkpoint).
 
 ## Environment Availability
 
