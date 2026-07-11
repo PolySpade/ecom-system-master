@@ -32,7 +32,7 @@
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Walking Skeleton: scaffold + camera service + WAL SQLite + manual scan→record→stop-and-start→stop loop
+- [x] 01-01-PLAN.md — Walking Skeleton: scaffold + camera service + WAL SQLite + manual scan→record→stop-and-start→stop loop
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -114,7 +114,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scan-Record-Save Spike | 0/3 | Planned | - |
+| 1. Scan-Record-Save Spike | 1/3 | In Progress|  |
 | 2. Full Recording Workflow | 0/TBD | Not started | - |
 | 3. Compression Pipeline | 0/TBD | Not started | - |
 | 4. Search & Settings | 0/TBD | Not started | - |
