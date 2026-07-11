@@ -36,7 +36,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — Global keyboard-wedge barcode capture (BAR-01/02) + min-size scaling preview + RECORDING overlay
+- [x] 01-02-PLAN.md — Global keyboard-wedge barcode capture (BAR-01/02) + min-size scaling preview + RECORDING overlay
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -114,7 +114,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scan-Record-Save Spike | 1/3 | In Progress|  |
+| 1. Scan-Record-Save Spike | 2/3 | In Progress|  |
 | 2. Full Recording Workflow | 0/TBD | Not started | - |
 | 3. Compression Pipeline | 0/TBD | Not started | - |
 | 4. Search & Settings | 0/TBD | Not started | - |
