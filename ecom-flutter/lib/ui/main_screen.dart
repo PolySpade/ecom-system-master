@@ -10,6 +10,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../core/barcode_handler.dart';
+import '../core/barcode_listener.dart';
 import '../core/camera_service.dart';
 import '../core/database.dart';
 import '../models/transaction.dart';
@@ -20,11 +21,24 @@ class MainScreen extends StatefulWidget {
     required this.cameraService,
     required this.database,
     required this.barcodeHandler,
+    required this.barcodeListener,
+    this.rootFocusNode,
   });
 
   final CameraService cameraService;
   final AppDatabase database;
   final BarcodeHandler barcodeHandler;
+
+  /// The global scanner listener (BAR-01). MainScreen wires its
+  /// [GlobalBarcodeListener.onBarcodeScanned] callback into the exact same
+  /// [_submitBarcode] path manual entry uses (BAR-02) - no duplicated
+  /// start/stop/DB orchestration.
+  final GlobalBarcodeListener barcodeListener;
+
+  /// Non-null only when main.dart's `Focus`-wrapper fallback is active
+  /// (see `useHardwareKeyboardBarcodeListener`); used to reclaim root
+  /// focus after a dialog closes so scanning keeps working.
+  final FocusNode? rootFocusNode;
 
   @override
   State<MainScreen> createState() => _MainScreenState();
@@ -42,6 +56,9 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _refreshRecentTransactions();
+    // Route scanner-sourced barcodes into the SAME processBarcode path
+    // manual entry uses (BAR-02) - no duplicated orchestration.
+    widget.barcodeListener.onBarcodeScanned = _handleScannedBarcode;
   }
 
   @override
@@ -51,14 +68,29 @@ class _MainScreenState extends State<MainScreen> {
     super.dispose();
   }
 
+  /// Entry point for scanner-sourced barcodes (BAR-01). Populates the same
+  /// text field the manual path reads from, then submits through the
+  /// identical [_submitBarcode] method.
+  void _handleScannedBarcode(String barcode) {
+    _barcodeController.text = barcode;
+    _submitBarcode();
+  }
+
+  /// Reclaims root focus after a dialog closes, when the `Focus`-wrapper
+  /// fallback is active (see main.dart's `useHardwareKeyboardBarcodeListener`).
+  /// No-op when the primary HardwareKeyboard mechanism is in use.
+  void _reclaimRootFocus() {
+    widget.rootFocusNode?.requestFocus();
+  }
+
   Future<void> _refreshRecentTransactions() async {
     final recent = await widget.database.getRecentTransactions(limit: 10);
     if (!mounted) return;
     setState(() => _recentTransactions = recent);
   }
 
-  Future<void> _showErrorDialog(String title, String message) {
-    return showDialog<void>(
+  Future<void> _showErrorDialog(String title, String message) async {
+    await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(title),
@@ -71,6 +103,9 @@ class _MainScreenState extends State<MainScreen> {
         ],
       ),
     );
+    // Reclaim root focus after the dialog closes so scanning keeps working
+    // under the Focus-wrapper fallback (no-op under the primary mechanism).
+    _reclaimRootFocus();
   }
 
   Future<void> _submitBarcode() async {
@@ -165,6 +200,76 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  /// Builds the RECORDING overlay (CAM-03). Conditionally rendered - not
+  /// always-present-and-hidden (matches PATTERNS.md's camera panel
+  /// convention) - and absent from the widget tree entirely while idle.
+  /// Reads filename/label from cameraService.currentFilename/currentLabel,
+  /// the single source of truth for the in-progress recording (Plan 01-01
+  /// Task 3); MainScreen does not keep its own copy of this state.
+  Widget? _buildRecordingOverlay() {
+    final isRecording = widget.cameraService.isRecording;
+    final filename = widget.cameraService.currentFilename;
+    if (!isRecording || filename == null) return null;
+
+    final label = widget.cameraService.currentLabel ?? '';
+
+    return Positioned(
+      top: 8,
+      right: 8,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.red,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 6),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Text(
+              'RECORDING: $filename [$label]',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Preview area (CAM-01/CAM-02): scales continuously with window resizes
+  /// while preserving the camera's aspect ratio, via AspectRatio inside a
+  /// FittedBox/Center within an Expanded region.
+  Widget _buildPreviewArea() {
+    final overlay = _buildRecordingOverlay();
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          children: [
+            Center(
+              child: AspectRatio(
+                aspectRatio: widget.cameraService.aspectRatio,
+                child: widget.cameraService.buildPreview(),
+              ),
+            ),
+            ?overlay,
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isRecording = widget.cameraService.isRecording;
@@ -178,33 +283,7 @@ class _MainScreenState extends State<MainScreen> {
           children: [
             Expanded(
               flex: 3,
-              child: Stack(
-                children: [
-                  Positioned.fill(child: widget.cameraService.buildPreview()),
-                  if (isRecording)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.red,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'RECORDING',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+              child: _buildPreviewArea(),
             ),
             const SizedBox(height: 16),
             Row(
