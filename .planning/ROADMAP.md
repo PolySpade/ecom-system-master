@@ -25,7 +25,11 @@
   3. Operator can manually stop the active recording with a button, and it is disabled while idle
   4. Live camera preview renders continuously at ~30fps in a resizable window (min 800x600), with a red "RECORDING" indicator overlaid while recording
   5. Every start/stop cycle writes a row to a SQLite database whose schema is compatible with the existing `ecom-py` `database.db`, saved under `videos/YYYY-MM-DD/...`, and logged to `logs/app.log`
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 01-01-PLAN.md — Walking Skeleton: scaffold + camera service + WAL SQLite + manual scan→record→stop-and-start→stop loop
+- [ ] 01-02-PLAN.md — Global keyboard-wedge barcode capture (BAR-01/02) + min-size scaling preview + RECORDING overlay
+- [ ] 01-03-PLAN.md — Windows hardware validation spike (back-to-back recording, focus-independence, enumeration, release build)
 **UI hint**: yes
 
 ### Phase 2: Full Recording Workflow
@@ -86,7 +90,7 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scan-Record-Save Spike | 0/TBD | Not started | - |
+| 1. Scan-Record-Save Spike | 0/3 | Planned | - |
 | 2. Full Recording Workflow | 0/TBD | Not started | - |
 | 3. Compression Pipeline | 0/TBD | Not started | - |
 | 4. Search & Settings | 0/TBD | Not started | - |
