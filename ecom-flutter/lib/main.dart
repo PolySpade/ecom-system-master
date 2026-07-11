@@ -7,6 +7,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'core/barcode_handler.dart';
 import 'core/barcode_listener.dart';
@@ -15,6 +16,12 @@ import 'core/config.dart';
 import 'core/database.dart';
 import 'core/logger.dart';
 import 'ui/main_screen.dart';
+
+/// Minimum window size (CAM-02) - the app refuses to shrink below this.
+const Size _kMinimumWindowSize = Size(800, 600);
+
+/// Default/initial window size on launch.
+const Size _kInitialWindowSize = Size(1024, 768);
 
 /// Toggle between the two candidate global-keyboard-capture mechanisms for
 /// BAR-01 (RESEARCH.md Pitfall 2 / Flutter issue #160786 - focus-independence
@@ -31,6 +38,17 @@ const bool useHardwareKeyboardBarcodeListener = true;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+
+  const windowOptions = WindowOptions(
+    minimumSize: _kMinimumWindowSize,
+    size: _kInitialWindowSize,
+  );
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.setMinimumSize(_kMinimumWindowSize);
+    await windowManager.show();
+    await windowManager.focus();
+  });
 
   final config = Config.load();
 

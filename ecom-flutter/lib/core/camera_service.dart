@@ -62,6 +62,14 @@ class CameraService {
   /// Whether a recording is currently in progress.
   bool get isRecording => _controller?.value.isRecordingVideo ?? false;
 
+  /// The initialized preview's aspect ratio (width / height), used by
+  /// main_screen.dart to keep the preview's proportions correct while it
+  /// scales with window resizing (CAM-02). Falls back to a common 4:3
+  /// webcam ratio if the controller isn't initialized yet.
+  double get aspectRatio => _controller?.value.isInitialized == true
+      ? _controller!.value.aspectRatio
+      : 4 / 3;
+
   /// Returns the list of cameras available on this machine.
   static Future<List<CameraDescription>> listCameras() {
     return availableCameras();

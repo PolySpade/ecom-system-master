@@ -200,6 +200,76 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  /// Builds the RECORDING overlay (CAM-03). Conditionally rendered - not
+  /// always-present-and-hidden (matches PATTERNS.md's camera panel
+  /// convention) - and absent from the widget tree entirely while idle.
+  /// Reads filename/label from cameraService.currentFilename/currentLabel,
+  /// the single source of truth for the in-progress recording (Plan 01-01
+  /// Task 3); MainScreen does not keep its own copy of this state.
+  Widget? _buildRecordingOverlay() {
+    final isRecording = widget.cameraService.isRecording;
+    final filename = widget.cameraService.currentFilename;
+    if (!isRecording || filename == null) return null;
+
+    final label = widget.cameraService.currentLabel ?? '';
+
+    return Positioned(
+      top: 8,
+      right: 8,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.red,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 6),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Text(
+              'RECORDING: $filename [$label]',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Preview area (CAM-01/CAM-02): scales continuously with window resizes
+  /// while preserving the camera's aspect ratio, via AspectRatio inside a
+  /// FittedBox/Center within an Expanded region.
+  Widget _buildPreviewArea() {
+    final overlay = _buildRecordingOverlay();
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Stack(
+          children: [
+            Center(
+              child: AspectRatio(
+                aspectRatio: widget.cameraService.aspectRatio,
+                child: widget.cameraService.buildPreview(),
+              ),
+            ),
+            ?overlay,
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isRecording = widget.cameraService.isRecording;
@@ -213,33 +283,7 @@ class _MainScreenState extends State<MainScreen> {
           children: [
             Expanded(
               flex: 3,
-              child: Stack(
-                children: [
-                  Positioned.fill(child: widget.cameraService.buildPreview()),
-                  if (isRecording)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.red,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'RECORDING',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+              child: _buildPreviewArea(),
             ),
             const SizedBox(height: 16),
             Row(
