@@ -151,4 +151,89 @@ void main() {
 
     await appDb.close();
   });
+
+  test('updateCompressionStatus writes status only when no extras given',
+      () async {
+    final dbPath = '${tempDir.path}/database.db';
+    final appDb = await AppDatabase.open(dbPath, logger);
+
+    final id = await appDb.createTransaction('ABC123', '/videos/x.mp4');
+    await appDb.updateCompressionStatus(id, 'processing');
+
+    final recent = await appDb.getRecentTransactions(limit: 10);
+    final row = recent.firstWhere((t) => t.id == id);
+    expect(row.compressionStatus, 'processing');
+    expect(row.compressedFileSizeMb, isNull);
+    expect(row.compressionRatio, isNull);
+    expect(row.compressedFilename, isNull);
+
+    await appDb.close();
+  });
+
+  test('updateCompressionStatus persists size, ratio and filename', () async {
+    final dbPath = '${tempDir.path}/database.db';
+    final appDb = await AppDatabase.open(dbPath, logger);
+
+    final id = await appDb.createTransaction('ABC123', '/videos/x.mp4');
+    await appDb.updateCompressionStatus(
+      id,
+      'completed',
+      compressedFileSizeMb: 1.23,
+      compressionRatio: 45.6,
+      compressedFilename: 'x.mp4',
+    );
+
+    final recent = await appDb.getRecentTransactions(limit: 10);
+    final row = recent.firstWhere((t) => t.id == id);
+    expect(row.compressionStatus, 'completed');
+    expect(row.compressedFileSizeMb, 1.23);
+    expect(row.compressionRatio, 45.6);
+    expect(row.compressedFilename, 'x.mp4');
+
+    await appDb.close();
+  });
+
+  test(
+      'getPendingCompressions returns only pending completed recordings, '
+      'oldest first', () async {
+    final dbPath = '${tempDir.path}/database.db';
+    final appDb = await AppDatabase.open(dbPath, logger);
+
+    // Pending but still recording (no end_time) - excluded.
+    await appDb.createTransaction('STILL_RECORDING', '/videos/a.mp4');
+
+    // Completed recording, still pending - included.
+    final pending1 = await appDb.createTransaction('OLD', '/videos/b.mp4');
+    await appDb.completeTransaction(
+      pending1,
+      durationSeconds: 5,
+      fileSizeMb: 1.0,
+      stopMethod: 'barcode',
+    );
+
+    // Completed recording, already compressed - excluded.
+    final done = await appDb.createTransaction('DONE', '/videos/c.mp4');
+    await appDb.completeTransaction(
+      done,
+      durationSeconds: 5,
+      fileSizeMb: 1.0,
+      stopMethod: 'barcode',
+    );
+    await appDb.updateCompressionStatus(done, 'completed');
+
+    // Second pending completed recording - included, after pending1.
+    await Future<void>.delayed(const Duration(milliseconds: 1100));
+    final pending2 = await appDb.createTransaction('NEW', '/videos/d.mp4');
+    await appDb.completeTransaction(
+      pending2,
+      durationSeconds: 5,
+      fileSizeMb: 1.0,
+      stopMethod: 'manual',
+    );
+
+    final result = await appDb.getPendingCompressions();
+    expect(result.map((t) => t.barcode).toList(), ['OLD', 'NEW']);
+
+    await appDb.close();
+  });
 }

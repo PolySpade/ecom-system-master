@@ -178,6 +178,56 @@ class AppDatabase {
     }
   }
 
+  /// Updates the compression status for a transaction (COMP-05).
+  ///
+  /// Only the provided optional fields are written, mirroring ecom-py
+  /// database.py's dynamically-built UPDATE in update_compression_status().
+  /// [status] must be one of ecom-py's status strings:
+  /// pending/processing/completed/failed/skipped.
+  Future<void> updateCompressionStatus(
+    int id,
+    String status, {
+    double? compressedFileSizeMb,
+    double? compressionRatio,
+    String? compressedFilename,
+  }) async {
+    try {
+      final values = <String, Object?>{
+        'compression_status': status,
+        'compressed_file_size_mb': ?compressedFileSizeMb,
+        'compression_ratio': ?compressionRatio,
+        'compressed_filename': ?compressedFilename,
+      };
+      await _db.update(
+        'transactions',
+        values,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      _logger.info('Updated compression status for transaction $id: $status');
+    } catch (e) {
+      _logger.error('Error updating compression status: $e');
+      rethrow;
+    }
+  }
+
+  /// Returns completed recordings still awaiting compression
+  /// (compression_status = 'pending' AND end_time set), oldest first -
+  /// mirrors ecom-py database.py's get_pending_compressions().
+  Future<List<Transaction>> getPendingCompressions() async {
+    try {
+      final rows = await _db.query(
+        'transactions',
+        where: "compression_status = 'pending' AND end_time IS NOT NULL",
+        orderBy: 'created_at ASC',
+      );
+      return rows.map(Transaction.fromRow).toList();
+    } catch (e) {
+      _logger.error('Error fetching pending compressions: $e');
+      return [];
+    }
+  }
+
   /// Closes the underlying database connection.
   Future<void> close() => _db.close();
 }
