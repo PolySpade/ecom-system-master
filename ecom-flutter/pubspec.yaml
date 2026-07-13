@@ -43,6 +43,9 @@ dependencies:
   path: ^1.9.1
   path_provider: ^2.1.6
   intl: ^0.20.3
+  # Native file/folder pickers for the Settings > Storage tab (SET-05).
+  # First-party package published by flutter.dev.
+  file_selector: ^1.0.3
 
 dev_dependencies:
   flutter_test:

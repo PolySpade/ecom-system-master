@@ -15,6 +15,17 @@ import 'package:flutter/widgets.dart';
 import 'file_paths.dart';
 import 'logger.dart';
 
+/// Maps a configured resolution (settings.json video.resolution_width/
+/// height, the ecom-py-compatible representation) onto the camera plugin's
+/// [ResolutionPreset] ladder - camera_windows does not accept exact WxH, so
+/// the preset closest to (and covering) the requested height is used.
+ResolutionPreset resolutionPresetFor(int width, int height) {
+  if (height <= 480) return ResolutionPreset.medium;
+  if (height <= 720) return ResolutionPreset.high;
+  if (height <= 1080) return ResolutionPreset.veryHigh;
+  return ResolutionPreset.ultraHigh;
+}
+
 /// Result returned by [CameraService.stopRecording].
 class StopRecordingResult {
   const StopRecordingResult({
@@ -76,8 +87,13 @@ class CameraService {
   }
 
   /// Initializes the camera at [cameraIndex]. Must be called before
-  /// [buildPreview] or [startRecording].
-  Future<void> init(int cameraIndex) async {
+  /// [buildPreview] or [startRecording]. [resolutionPreset] maps the
+  /// configured resolution onto the plugin's preset ladder (see
+  /// [resolutionPresetFor]).
+  Future<void> init(
+    int cameraIndex, {
+    ResolutionPreset resolutionPreset = ResolutionPreset.high,
+  }) async {
     final cameras = await availableCameras();
     if (cameras.isEmpty) {
       throw StateError('No cameras available');
@@ -87,11 +103,28 @@ class CameraService {
 
     final controller = CameraController(
       description,
-      ResolutionPreset.high,
+      resolutionPreset,
       enableAudio: false,
     );
     await controller.initialize();
     _controller = controller;
+  }
+
+  /// Releases the current controller and re-runs [init] - the async camera
+  /// restart used after capture-affecting settings change (SET-08),
+  /// mirroring ecom-py CameraHandler.reinitialize(). Throws a [StateError]
+  /// if called while recording.
+  Future<void> reinitialize(
+    int cameraIndex, {
+    ResolutionPreset resolutionPreset = ResolutionPreset.high,
+  }) async {
+    if (isRecording) {
+      throw StateError('Cannot reinitialize while recording');
+    }
+    _logger.info('Reinitializing camera (index $cameraIndex)');
+    await dispose();
+    await init(cameraIndex, resolutionPreset: resolutionPreset);
+    _logger.info('Camera reinitialized');
   }
 
   /// Returns the live camera preview widget. [init] must have completed.
