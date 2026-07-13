@@ -84,4 +84,91 @@ void main() {
       expect(path.contains('${p.separator}Normal${p.separator}'), isTrue);
     });
   });
+
+  group('resolveVideoPath (SRCH-06 legacy fallback)', () {
+    late Directory tempDir;
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('resolve_video_path_');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) {
+        tempDir.deleteSync(recursive: true);
+      }
+    });
+
+    test('returns the label-folder path when the file exists there', () {
+      final labeled = Directory(
+        p.join(tempDir.path, '2026-07-01', 'Return and Refund'),
+      )..createSync(recursive: true);
+      File(p.join(labeled.path, 'v.mp4')).createSync();
+
+      final resolved = resolveVideoPath(
+        basePath: tempDir.path,
+        startTime: '2026-07-01T10:30:00.000',
+        label: 'Return and Refund Unboxing',
+        videoFilename: 'v.mp4',
+      );
+      expect(resolved, p.join(labeled.path, 'v.mp4'));
+    });
+
+    test('falls back to the legacy date-root path when label path missing',
+        () {
+      final dateRoot = Directory(p.join(tempDir.path, '2026-07-01'))
+        ..createSync(recursive: true);
+      File(p.join(dateRoot.path, 'legacy.mp4')).createSync();
+
+      final resolved = resolveVideoPath(
+        basePath: tempDir.path,
+        startTime: '2026-07-01T10:30:00.000',
+        label: 'Normal (Standard)',
+        videoFilename: 'legacy.mp4',
+      );
+      expect(resolved, p.join(dateRoot.path, 'legacy.mp4'));
+      expect(File(resolved).existsSync(), isTrue);
+    });
+
+    test('prefers the label-folder path when both layouts have the file',
+        () {
+      final labeled = Directory(p.join(tempDir.path, '2026-07-01', 'Normal'))
+        ..createSync(recursive: true);
+      File(p.join(labeled.path, 'both.mp4')).createSync();
+      File(p.join(tempDir.path, '2026-07-01', 'both.mp4')).createSync();
+
+      final resolved = resolveVideoPath(
+        basePath: tempDir.path,
+        startTime: '2026-07-01T10:30:00.000',
+        label: 'Normal (Standard)',
+        videoFilename: 'both.mp4',
+      );
+      expect(resolved, p.join(labeled.path, 'both.mp4'));
+    });
+
+    test('returns the legacy path even when neither file exists '
+        '(caller surfaces not-found, matching the reference)', () {
+      final resolved = resolveVideoPath(
+        basePath: tempDir.path,
+        startTime: '2026-07-01T10:30:00.000',
+        label: 'Normal (Standard)',
+        videoFilename: 'ghost.mp4',
+      );
+      expect(resolved, p.join(tempDir.path, '2026-07-01', 'ghost.mp4'));
+      expect(File(resolved).existsSync(), isFalse);
+    });
+
+    test('unknown label resolves through the Normal folder', () {
+      final labeled = Directory(p.join(tempDir.path, '2026-07-01', 'Normal'))
+        ..createSync(recursive: true);
+      File(p.join(labeled.path, 'v.mp4')).createSync();
+
+      final resolved = resolveVideoPath(
+        basePath: tempDir.path,
+        startTime: '2026-07-01T10:30:00.000',
+        label: 'Something Unrecognized',
+        videoFilename: 'v.mp4',
+      );
+      expect(resolved, p.join(labeled.path, 'v.mp4'));
+    });
+  });
 }

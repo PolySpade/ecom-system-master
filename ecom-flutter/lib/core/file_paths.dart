@@ -10,6 +10,36 @@ import 'dart:io';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 
+/// Resolves the on-disk location of a recorded video for playback/reveal
+/// (SRCH-06). Behavioral port of SearchWindow.create_result_card's path
+/// fallback in ecom-py/app_gui.py: try the current layout
+/// `<basePath>/<yyyy-MM-dd>/<LabelFolder>/<filename>` first; when that file
+/// does not exist, fall back to the legacy pre-label-folder ecom-py layout
+/// `<basePath>/<yyyy-MM-dd>/<filename>` (returned even if it too does not
+/// exist - callers surface "file not found" at open time, like the
+/// reference).
+///
+/// [startTime] is the transaction's ISO-8601 start_time, used to derive the
+/// date folder; [label] maps through [labelFolderName] (unknown labels fall
+/// back to "Normal").
+String resolveVideoPath({
+  required String basePath,
+  required String startTime,
+  required String label,
+  required String videoFilename,
+}) {
+  final dateFolder =
+      DateFormat('yyyy-MM-dd').format(DateTime.parse(startTime));
+  final labelFolder = labelFolderName(label);
+
+  final labeledPath =
+      p.normalize(p.join(basePath, dateFolder, labelFolder, videoFilename));
+  if (File(labeledPath).existsSync()) {
+    return labeledPath;
+  }
+  return p.normalize(p.join(basePath, dateFolder, videoFilename));
+}
+
 /// Exact 3-entry label -> folder-name map from ecom-py/camera_handler.py,
 /// with "Normal" as the fallback default for any unrecognized label.
 const Map<String, String> _labelFolderMap = {
