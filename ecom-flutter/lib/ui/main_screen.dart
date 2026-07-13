@@ -270,9 +270,11 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
 
   /// Backlog compression (operator-triggered): queues every completed
   /// recording still marked compression_status='pending' (e.g. recorded
-  /// while FFmpeg was missing or compression was disabled). Rows already
-  /// queued this session are skipped so the normal post-save chain and
-  /// this button can never double-queue a file.
+  /// while FFmpeg was missing or compression was disabled). Backlog jobs
+  /// get the same scale+watermark filter as fresh recordings - a pending
+  /// row has never been through the post-process pass, so it cannot be
+  /// double-watermarked. Rows already queued this session are skipped so
+  /// this button and the post-save chain can never double-queue a file.
   Future<void> _compressPendingRecordings() async {
     final pending = await widget.database.getPendingCompressions();
     var queued = 0;
@@ -289,11 +291,18 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
         missing++;
         continue;
       }
+      final filter = buildRecordingPostFilter(
+        barcode: t.barcode,
+        label: t.label,
+        startTime: DateTime.tryParse(t.startTime),
+        targetHeight: widget.config.resolutionHeight,
+      );
       _sessionQueuedCompressionIds.add(t.id);
       await widget.compressor.queueCompression(
         path,
         t.id,
         CompressionSettings.fromConfig(widget.config),
+        videoFilter: filter,
       );
       queued++;
     }
@@ -529,24 +538,20 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     }
   }
 
-  /// Fire-and-forget: queues the single post-save FFmpeg pass that burns
-  /// the watermark AND compresses in one encode (never delays the next
-  /// scan - the compressor's worker is serialized off the UI path). When
-  /// no usable font exists the pass still runs as a plain compression.
+  /// Fire-and-forget: queues the single post-save FFmpeg pass that
+  /// downscales to the configured resolution (the camera records at its
+  /// max resolution regardless of preset), burns the watermark, and
+  /// compresses - all in one encode (never delays the next scan). When no
+  /// usable font exists the pass still runs as scale+compression.
   void _enqueuePostProcess(StopRecordingResult stopResult, int? transactionId) {
     if (transactionId == null) return;
 
-    final font = findWindowsFontFile();
-    String? filter;
-    if (font != null) {
-      filter = buildWatermarkFilter(
-        fontFile: font,
-        barcode: stopResult.barcode,
-        label: stopResult.label,
-        startEpochSeconds:
-            stopResult.startTime.millisecondsSinceEpoch ~/ 1000,
-      );
-    }
+    final filter = buildRecordingPostFilter(
+      barcode: stopResult.barcode,
+      label: stopResult.label,
+      startTime: stopResult.startTime,
+      targetHeight: widget.config.resolutionHeight,
+    );
 
     _sessionQueuedCompressionIds.add(transactionId);
     unawaited(

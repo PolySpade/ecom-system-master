@@ -123,6 +123,43 @@ String buildWatermarkFilter({
   return '$timestamp,$labelFilter,$barcodeFilter';
 }
 
+/// Builds the complete post-save -vf chain for a recording: a downscale to
+/// [targetHeight] followed by the three-part watermark.
+///
+/// The downscale exists because camera_windows opens its RECORD stream at
+/// the camera's maximum resolution regardless of ResolutionPreset (the
+/// preset caps only the preview - see capture_controller.cpp's
+/// FindBaseMediaTypesForSource), so a "4K" webcam always records 4K. The
+/// scale normalizes output to the configured resolution; min(h, ih) never
+/// upscales smaller sources.
+///
+/// Falls back gracefully: no usable font -> scale-only; targetHeight <= 0
+/// -> watermark-only; neither -> null (caller queues a plain compression).
+String? buildRecordingPostFilter({
+  required String barcode,
+  required String label,
+  required DateTime? startTime,
+  required int targetHeight,
+  String? fontFile,
+}) {
+  final scale =
+      targetHeight > 0 ? 'scale=-2:min($targetHeight\\,ih)' : null;
+
+  final font = fontFile ?? findWindowsFontFile();
+  String? watermark;
+  if (font != null && startTime != null) {
+    watermark = buildWatermarkFilter(
+      fontFile: font,
+      barcode: barcode,
+      label: label,
+      startEpochSeconds: startTime.millisecondsSinceEpoch ~/ 1000,
+    );
+  }
+
+  if (scale != null && watermark != null) return '$scale,$watermark';
+  return watermark ?? scale;
+}
+
 /// Builds the ffmpeg argument list (no shell involved - args are passed
 /// directly to the process). High-quality re-encode: the Phase-3
 /// compression pass owns the real size reduction.

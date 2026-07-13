@@ -44,6 +44,62 @@ void main() {
     });
   });
 
+  group('buildRecordingPostFilter', () {
+    final start = DateTime(2026, 7, 13, 12, 0);
+
+    test('combines escaped scale and watermark in order', () {
+      final filter = buildRecordingPostFilter(
+        barcode: 'ABC',
+        label: 'Normal (Standard)',
+        startTime: start,
+        targetHeight: 720,
+        fontFile: r'C:\Windows\Fonts\arial.ttf',
+      )!;
+
+      // Comma inside min() must be escaped or it splits the filterchain.
+      expect(filter, startsWith(r'scale=-2:min(720\,ih),drawtext='));
+      expect(filter, contains(r"text='Barcode\: ABC'"));
+    });
+
+    test('scale-only when no font is available', () {
+      final filter = buildRecordingPostFilter(
+        barcode: 'ABC',
+        label: 'Normal (Standard)',
+        startTime: start,
+        targetHeight: 1080,
+        fontFile: null,
+      );
+      // fontFile null falls back to findWindowsFontFile(); on a machine
+      // with fonts this returns the full chain, so only assert the scale
+      // prefix is always present.
+      expect(filter, isNotNull);
+      expect(filter, startsWith(r'scale=-2:min(1080\,ih)'));
+    });
+
+    test('watermark-only when targetHeight is 0', () {
+      final filter = buildRecordingPostFilter(
+        barcode: 'ABC',
+        label: 'Normal (Standard)',
+        startTime: start,
+        targetHeight: 0,
+        fontFile: r'C:\Windows\Fonts\arial.ttf',
+      )!;
+      expect(filter, startsWith('drawtext='));
+      expect(filter.contains('scale'), isFalse);
+    });
+
+    test('unparseable start time drops the watermark, keeps the scale', () {
+      final filter = buildRecordingPostFilter(
+        barcode: 'ABC',
+        label: 'Normal (Standard)',
+        startTime: null,
+        targetHeight: 720,
+        fontFile: r'C:\Windows\Fonts\arial.ttf',
+      );
+      expect(filter, r'scale=-2:min(720\,ih)');
+    });
+  });
+
   group('buildWatermarkFilter', () {
     test('contains three drawtext overlays at the reference positions', () {
       final filter = buildWatermarkFilter(
