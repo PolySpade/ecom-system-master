@@ -12,8 +12,11 @@ import 'package:flutter/material.dart';
 import '../core/barcode_handler.dart';
 import '../core/barcode_listener.dart';
 import '../core/camera_service.dart';
+import '../core/config.dart';
 import '../core/database.dart';
 import '../models/transaction.dart';
+import 'search_screen.dart';
+import 'settings_screen.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({
@@ -22,12 +25,18 @@ class MainScreen extends StatefulWidget {
     required this.database,
     required this.barcodeHandler,
     required this.barcodeListener,
+    required this.config,
     this.rootFocusNode,
   });
 
   final CameraService cameraService;
   final AppDatabase database;
   final BarcodeHandler barcodeHandler;
+
+  /// Live config (Phase 4): supplies videoStoragePath for the Search
+  /// screen's path resolution and the shared SettingsManager for the
+  /// Settings screen.
+  final Config config;
 
   /// The global scanner listener (BAR-01). MainScreen wires its
   /// [GlobalBarcodeListener.onBarcodeScanned] callback into the exact same
@@ -247,6 +256,34 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  /// Opens a full-screen child route (Search/Settings) with the global
+  /// scanner callback suspended, so a scan on the child screen cannot start
+  /// a recording behind it. Restores routing + root focus + rebuilds on
+  /// return (the camera may have been reinitialized by Settings).
+  Future<void> _openChildScreen(Widget screen) async {
+    widget.barcodeListener.onBarcodeScanned = (_) {};
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (context) => screen),
+    );
+    widget.barcodeListener.onBarcodeScanned = _handleScannedBarcode;
+    _reclaimRootFocus();
+    if (mounted) setState(() {});
+  }
+
+  void _openSearch() {
+    _openChildScreen(SearchScreen(
+      database: widget.database,
+      videoStoragePath: widget.config.videoStoragePath,
+    ));
+  }
+
+  void _openSettings() {
+    _openChildScreen(SettingsScreen(
+      settingsManager: widget.config.settingsManager,
+      cameraService: widget.cameraService,
+    ));
+  }
+
   /// Preview area (CAM-01/CAM-02): scales continuously with window resizes
   /// while preserving the camera's aspect ratio, via AspectRatio inside a
   /// FittedBox/Center within an Expanded region.
@@ -275,7 +312,23 @@ class _MainScreenState extends State<MainScreen> {
     final isRecording = widget.cameraService.isRecording;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Ecom Video Tracker')),
+      appBar: AppBar(
+        title: const Text('Ecom Video Tracker'),
+        // Phase 4 entry points - kept to a minimal, isolated diff because
+        // Phase 2 is redesigning this screen.
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Search Recordings',
+            onPressed: _openSearch,
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
