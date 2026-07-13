@@ -1,55 +1,35 @@
-/// Config - Minimal settings read (camera index, video path, etc.) for
-/// Phase 1.
+/// Config - thin projection of [SettingsManager] onto typed, path-resolved
+/// getters.
 ///
-/// Behavioral port of ecom-py/config.py + ecom-py/settings_manager.py:
-/// base dir resolves beside the executable (matching PyInstaller frozen-exe
-/// behavior), settings.json is deep-merged over full defaults, relative
-/// storage paths resolve against the base dir while absolute paths pass
-/// through unchanged.
+/// Behavioral port of ecom-py/config.py: base dir resolves beside the
+/// executable (matching PyInstaller frozen-exe behavior), relative storage
+/// paths resolve against the base dir while absolute paths pass through
+/// unchanged. All setting values are read live from the shared
+/// [SettingsManager] (backed by settings.json, deep-merged over defaults),
+/// so changes made through the Settings screen propagate to these getters
+/// without a restart - the Dart equivalent of config.reload_config().
 library;
 
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
-/// Full DEFAULT_SETTINGS map, mirroring
-/// ecom-py/settings_manager.py's SettingsManager.DEFAULT_SETTINGS, reduced
-/// to the categories/keys Phase 1 needs.
-const Map<String, Map<String, Object?>> _defaultSettings = {
-  'video': {
-    'resolution_width': 1280,
-    'resolution_height': 720,
-    'fps': 30,
-    'codec': 'mp4v',
-  },
-  'camera': {
-    'index': 0,
-    'auto_exposure': true,
-    'exposure': -4,
-    'gain': 0,
-    'brightness': 128,
-  },
-  'storage': {
-    'video_path': 'videos',
-    'database_path': 'database.db',
-    'log_path': 'logs',
-  },
-  'app': {
-    'flask_host': '127.0.0.1',
-    'flask_port': 5000,
-    'debug_mode': false,
-  },
-};
+import 'settings_manager.dart';
 
-/// Loads settings.json (if present) beside the executable, deep-merges it
-/// over [_defaultSettings], and exposes typed getters for the values this
-/// phase's services need.
+/// Exposes typed getters over the live [SettingsManager], resolving
+/// relative storage paths against the executable's directory.
 class Config {
-  Config._(this._baseDir, this._settings);
+  /// Wraps an existing [SettingsManager] with paths resolved against
+  /// [baseDir]. Prefer [Config.load] in production; this constructor exists
+  /// for tests.
+  Config(this._baseDir, this.settingsManager);
 
   final String _baseDir;
-  final Map<String, Map<String, Object?>> _settings;
+
+  /// The live settings store backing this config. The Settings screen
+  /// mutates and saves through this same instance, so getter values here
+  /// update immediately after Save & Apply.
+  final SettingsManager settingsManager;
 
   /// Base directory: the directory containing the running executable,
   /// matching ecom-py's `sys.frozen` "beside the executable" behavior.
@@ -60,47 +40,8 @@ class Config {
   /// falling back to defaults entirely (T-01-03 mitigation).
   static Config load() {
     final baseDir = p.dirname(Platform.resolvedExecutable);
-    final merged = _deepCopyDefaults();
-
-    final settingsFile = File(p.join(baseDir, 'settings.json'));
-    if (settingsFile.existsSync()) {
-      try {
-        final raw = settingsFile.readAsStringSync();
-        final decoded = jsonDecode(raw);
-        if (decoded is Map<String, dynamic>) {
-          _deepMerge(merged, decoded);
-        }
-      } catch (_) {
-        // Malformed settings.json must not crash startup - fall back to
-        // defaults (T-01-03).
-      }
-    }
-
-    return Config._(baseDir, merged);
-  }
-
-  static Map<String, Map<String, Object?>> _deepCopyDefaults() {
-    return _defaultSettings.map(
-      (key, value) => MapEntry(key, Map<String, Object?>.from(value)),
-    );
-  }
-
-  static void _deepMerge(
-    Map<String, Map<String, Object?>> target,
-    Map<String, dynamic> source,
-  ) {
-    for (final entry in source.entries) {
-      final value = entry.value;
-      if (value is Map<String, dynamic> && target.containsKey(entry.key)) {
-        target[entry.key]!.addAll(value);
-      } else if (value is Map<String, dynamic>) {
-        target[entry.key] = Map<String, Object?>.from(value);
-      }
-    }
-  }
-
-  Object? _get(String category, String key, Object? fallback) {
-    return _settings[category]?[key] ?? fallback;
+    final settingsManager = SettingsManager(p.join(baseDir, 'settings.json'));
+    return Config(baseDir, settingsManager);
   }
 
   /// Resolves a possibly-relative storage path against [baseDir]. Absolute
@@ -113,24 +54,20 @@ class Config {
     return p.normalize(p.join(_baseDir, path));
   }
 
-  int get cameraIndex => (_get('camera', 'index', 0) as num).toInt();
+  int get cameraIndex => settingsManager.getCameraIndex();
 
   String get videoStoragePath =>
-      _resolvePath(_get('storage', 'video_path', 'videos') as String);
+      _resolvePath(settingsManager.getVideoStoragePath());
 
-  String get databasePath =>
-      _resolvePath(_get('storage', 'database_path', 'database.db') as String);
+  String get databasePath => _resolvePath(settingsManager.getDatabasePath());
 
-  String get logPath =>
-      _resolvePath(_get('storage', 'log_path', 'logs') as String);
+  String get logPath => _resolvePath(settingsManager.getLogPath());
 
-  int get resolutionWidth =>
-      (_get('video', 'resolution_width', 1280) as num).toInt();
+  int get resolutionWidth => settingsManager.getVideoResolution().$1;
 
-  int get resolutionHeight =>
-      (_get('video', 'resolution_height', 720) as num).toInt();
+  int get resolutionHeight => settingsManager.getVideoResolution().$2;
 
-  int get fps => (_get('video', 'fps', 30) as num).toInt();
+  int get fps => settingsManager.getVideoFps();
 
-  String get codec => _get('video', 'codec', 'mp4v') as String;
+  String get codec => settingsManager.getVideoCodec();
 }
