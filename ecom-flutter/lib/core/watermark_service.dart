@@ -52,7 +52,11 @@ class WatermarkJob {
 }
 
 /// Font candidates checked in order under the Windows fonts directory.
-const List<String> _fontCandidates = ['arial.ttf', 'segoeui.ttf', 'calibri.ttf'];
+const List<String> _fontCandidates = [
+  'arial.ttf',
+  'segoeui.ttf',
+  'calibri.ttf',
+];
 
 /// Returns the first available Windows font file usable by drawtext, or
 /// null when none exists. [fontsDir] is overridable for tests.
@@ -103,28 +107,39 @@ String buildWatermarkFilter({
 
   // Timestamp top-left: running clock, default localtime format
   // '%Y-%m-%d %H:%M:%S' matches ecom-py's strftime format exactly.
-  final timestamp = "drawtext=fontfile='$font'"
+  final timestamp =
+      "drawtext=fontfile='$font'"
       ":text='%{pts\\:localtime\\:$startEpochSeconds}'"
       ':$common:boxcolor=black@0.7:x=10:y=10';
 
   // Label top-right on the #667eea brand box (ecom-py's intended identity
   // color - see key-decisions in the plan summary).
   final labelText = escapeDrawtextText(label);
-  final labelFilter = "drawtext=fontfile='$font':expansion=none"
+  final labelFilter =
+      "drawtext=fontfile='$font':expansion=none"
       ":text='$labelText'"
       ':$common:boxcolor=0x667eea@1.0:x=w-tw-10:y=10';
 
   // Barcode bottom-left.
   final barcodeText = escapeDrawtextText('Barcode: $barcode');
-  final barcodeFilter = "drawtext=fontfile='$font':expansion=none"
+  final barcodeFilter =
+      "drawtext=fontfile='$font':expansion=none"
       ":text='$barcodeText'"
       ':$common:boxcolor=black@0.7:x=10:y=h-th-10';
 
   return '$timestamp,$labelFilter,$barcodeFilter';
 }
 
-/// Builds the complete post-save -vf chain for a recording: a downscale to
-/// [targetHeight] followed by the three-part watermark.
+/// Builds the complete post-save -vf chain for a recording: an
+/// unconditional horizontal mirror flip, followed by an optional downscale
+/// to [targetHeight], followed by the three-part watermark.
+///
+/// The flip bakes in the same left-right mirroring shown in the live
+/// preview (see CameraService.buildPreview) so the saved file matches what
+/// the operator saw on screen. camera_windows has no native "record
+/// mirrored" option, so this always costs one re-encode pass - even when
+/// watermarking and compression are both disabled - which is why callers
+/// must call this unconditionally rather than gating it on those toggles.
 ///
 /// The downscale exists because camera_windows opens its RECORD stream at
 /// the camera's maximum resolution regardless of ResolutionPreset (the
@@ -132,32 +147,32 @@ String buildWatermarkFilter({
 /// FindBaseMediaTypesForSource), so a "4K" webcam always records 4K. The
 /// scale normalizes output to the configured resolution; min(h, ih) never
 /// upscales smaller sources.
-///
-/// Falls back gracefully: no usable font -> scale-only; targetHeight <= 0
-/// -> watermark-only; neither -> null (caller queues a plain compression).
-String? buildRecordingPostFilter({
+String buildRecordingPostFilter({
   required String barcode,
   required String label,
   required DateTime? startTime,
   required int targetHeight,
   String? fontFile,
 }) {
-  final scale =
-      targetHeight > 0 ? 'scale=-2:min($targetHeight\\,ih)' : null;
+  final parts = <String>[];
+
+  if (targetHeight > 0) {
+    parts.add('scale=-2:min($targetHeight\\,ih)');
+  }
 
   final font = fontFile ?? findWindowsFontFile();
-  String? watermark;
   if (font != null && startTime != null) {
-    watermark = buildWatermarkFilter(
-      fontFile: font,
-      barcode: barcode,
-      label: label,
-      startEpochSeconds: startTime.millisecondsSinceEpoch ~/ 1000,
+    parts.add(
+      buildWatermarkFilter(
+        fontFile: font,
+        barcode: barcode,
+        label: label,
+        startEpochSeconds: startTime.millisecondsSinceEpoch ~/ 1000,
+      ),
     );
   }
 
-  if (scale != null && watermark != null) return '$scale,$watermark';
-  return watermark ?? scale;
+  return parts.join(',');
 }
 
 /// Builds the ffmpeg argument list (no shell involved - args are passed
@@ -171,13 +186,20 @@ List<String> buildFfmpegArgs({
   return [
     '-y',
     '-hide_banner',
-    '-loglevel', 'error',
-    '-i', inputPath,
-    '-vf', filter,
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-crf', '18',
-    '-c:a', 'copy',
+    '-loglevel',
+    'error',
+    '-i',
+    inputPath,
+    '-vf',
+    filter,
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryfast',
+    '-crf',
+    '18',
+    '-c:a',
+    'copy',
     outputPath,
   ];
 }
@@ -188,12 +210,11 @@ class WatermarkService {
     this._logger, {
     Future<String?> Function()? findFfmpeg,
     Future<ProcessResult> Function(String executable, List<String> args)?
-        runProcess,
+    runProcess,
     String? Function()? findFont,
-  })  : _findFfmpeg = findFfmpeg ?? FfmpegLocator.findFfmpeg,
-        _runProcess =
-            runProcess ?? ((exe, args) => Process.run(exe, args)),
-        _findFont = findFont ?? findWindowsFontFile;
+  }) : _findFfmpeg = findFfmpeg ?? FfmpegLocator.findFfmpeg,
+       _runProcess = runProcess ?? ((exe, args) => Process.run(exe, args)),
+       _findFont = findFont ?? findWindowsFontFile;
 
   final Logger _logger;
   final Future<String?> Function() _findFfmpeg;
@@ -244,9 +265,7 @@ class WatermarkService {
   Future<WatermarkOutcome> _process(WatermarkJob job) async {
     final input = File(job.videoPath);
     if (!input.existsSync()) {
-      _logger.warning(
-        'Watermark skipped - file not found: ${job.videoPath}',
-      );
+      _logger.warning('Watermark skipped - file not found: ${job.videoPath}');
       return WatermarkOutcome.failed;
     }
 

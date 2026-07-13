@@ -540,28 +540,28 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     }
   }
 
-  /// Fire-and-forget: queues the single post-save FFmpeg pass that
-  /// downscales to the configured resolution (the camera records at its
-  /// max resolution regardless of preset), burns the watermark, and
-  /// compresses - all in one encode (never delays the next scan).
+  /// Fire-and-forget: queues the single post-save FFmpeg pass that mirrors
+  /// the recording (to match the live preview), downscales to the
+  /// configured resolution (the camera records at its max resolution
+  /// regardless of preset), burns the watermark, and compresses - all in
+  /// one encode (never delays the next scan).
   ///
-  /// Settings semantics: watermark off -> the pass still scales+compresses
-  /// (no drawtext); watermark AND compression both off -> no filter, so
-  /// the compressor skips and the raw recording is kept as-is.
+  /// Settings semantics: the mirror flip always runs. Watermark off -> the
+  /// pass still flips+scales+compresses (no drawtext); watermark AND
+  /// compression both off -> the pass still runs just the mirror flip (and
+  /// scale, if configured) since there is no way to record mirrored
+  /// natively.
   void _enqueuePostProcess(StopRecordingResult stopResult, int? transactionId) {
     if (transactionId == null) return;
 
     final watermarkOn = widget.config.watermarkEnabled;
-    final compressionOn = widget.config.compressionEnabled;
-    final filter = (watermarkOn || compressionOn)
-        ? buildRecordingPostFilter(
-            barcode: stopResult.barcode,
-            label: stopResult.label,
-            // Null start time drops the drawtext part, keeping scale-only.
-            startTime: watermarkOn ? stopResult.startTime : null,
-            targetHeight: widget.config.resolutionHeight,
-          )
-        : null;
+    final filter = buildRecordingPostFilter(
+      barcode: stopResult.barcode,
+      label: stopResult.label,
+      // Null start time drops the drawtext part, keeping flip+scale-only.
+      startTime: watermarkOn ? stopResult.startTime : null,
+      targetHeight: widget.config.resolutionHeight,
+    );
 
     _sessionQueuedCompressionIds.add(transactionId);
     unawaited(

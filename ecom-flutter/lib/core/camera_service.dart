@@ -309,12 +309,22 @@ class CameraService {
   }
 
   /// Returns the live camera preview widget. [init] must have completed.
+  ///
+  /// Mirrored horizontally so the preview feels natural to an operator
+  /// standing in front of the camera (like a mirror/webcam-chat view).
+  /// This is purely a display transform - it does not affect what gets
+  /// written to the recorded file; the saved video is separately mirrored
+  /// via the `hflip` ffmpeg filter in watermark_service.dart's
+  /// buildRecordingPostFilter so the two stay visually consistent.
   Widget buildPreview() {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) {
       return const SizedBox.shrink();
     }
-    return CameraPreview(controller);
+    return Transform.flip(
+      flipX: true,
+      child: CameraPreview(controller),
+    );
   }
 
   /// Starts recording, tagging the resulting file with [barcode] and

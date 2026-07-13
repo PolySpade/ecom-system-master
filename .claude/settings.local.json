@@ -27,7 +27,8 @@
       "Bash(python -m py_compile:*)",
       "Bash(python -c:*)",
       "WebSearch",
-      "Bash(python build_compressor.py:*)"
+      "Bash(python build_compressor.py:*)",
+      "PowerShell(& \"C:\\\\Users\\\\Donald\\\\develop\\\\flutter\\\\bin\\\\flutter.bat\" doctor)"
     ]
   }
 }

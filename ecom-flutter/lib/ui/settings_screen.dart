@@ -697,7 +697,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           subtitle: const Text(
             'Re-encode recordings to reduce file size. When the watermark '
             'is on, watermarking and compression happen in the same pass. '
-            'With both off, videos are kept exactly as recorded.',
+            'Recordings are always mirrored to match the live preview, so '
+            'every video is re-encoded at least once even with this off.',
           ),
           value: _compressionEnabled,
           onChanged: (v) => setState(() => _compressionEnabled = v),
