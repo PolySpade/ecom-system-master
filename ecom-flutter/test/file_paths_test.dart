@@ -85,7 +85,7 @@ void main() {
     });
   });
 
-  group('resolveVideoPath', () {
+  group('resolveVideoPath (SRCH-06 legacy fallback)', () {
     late Directory tempDir;
     const startTime = '2026-07-13T10:30:00.000';
 
@@ -168,6 +168,34 @@ void main() {
       );
 
       expect(resolved, isNull);
+    });
+
+    test('prefers the label-folder path when both layouts have the file',
+        () {
+      final labeled = placeFile(['2026-07-13', 'Normal', 'both.mp4']);
+      placeFile(['2026-07-13', 'both.mp4']);
+
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: startTime,
+        label: 'Normal (Standard)',
+        videoFilename: 'both.mp4',
+      );
+
+      expect(resolved, labeled.path);
+    });
+
+    test('unknown label resolves through the Normal folder', () {
+      final file = placeFile(['2026-07-13', 'Normal', 'v.mp4']);
+
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: startTime,
+        label: 'Something Unrecognized',
+        videoFilename: 'v.mp4',
+      );
+
+      expect(resolved, file.path);
     });
   });
 }

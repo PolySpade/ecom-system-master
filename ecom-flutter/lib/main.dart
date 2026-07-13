@@ -63,7 +63,13 @@ Future<void> main() async {
 
   final cameraService = CameraService(config.videoStoragePath, logger);
   try {
-    await cameraService.init(config.cameraIndex);
+    await cameraService.init(
+      config.cameraIndex,
+      resolutionPreset: resolutionPresetFor(
+        config.resolutionWidth,
+        config.resolutionHeight,
+      ),
+    );
   } catch (e) {
     logger.error('Error initializing camera: $e');
   }
@@ -83,6 +89,7 @@ Future<void> main() async {
       watermarkService: watermarkService,
       videoStoragePath: config.videoStoragePath,
       minFreeSpaceGb: config.minFreeSpaceGb,
+      config: config,
     ),
   );
 }
@@ -97,6 +104,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
     required this.watermarkService,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
+    required this.config,
   });
 
   final CameraService cameraService;
@@ -106,6 +114,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
   final WatermarkService watermarkService;
   final String videoStoragePath;
   final double minFreeSpaceGb;
+  final Config config;
 
   @override
   State<EcomVideoTrackerApp> createState() => _EcomVideoTrackerAppState();
@@ -163,6 +172,7 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
         watermarkService: widget.watermarkService,
         videoStoragePath: widget.videoStoragePath,
         minFreeSpaceGb: widget.minFreeSpaceGb,
+        config: widget.config,
         rootFocusNode: useHardwareKeyboardBarcodeListener ? null : _rootFocusNode,
       ),
     );

@@ -22,6 +22,29 @@ const Map<String, String> _compressionColumns = {
   'compressed_filename': 'TEXT',
 };
 
+/// Result of [AppDatabase.advancedSearch]: one page of matching rows plus
+/// the total match count (for the "Showing X of Y" footer, SRCH-08).
+class AdvancedSearchResult {
+  const AdvancedSearchResult({
+    required this.results,
+    required this.total,
+    this.limit,
+    this.offset = 0,
+  });
+
+  /// The (possibly limited) page of matching transactions.
+  final List<Transaction> results;
+
+  /// Total number of rows matching the filters, ignoring limit/offset.
+  final int total;
+
+  /// The limit that was applied, or null for unlimited.
+  final int? limit;
+
+  /// The offset that was applied.
+  final int offset;
+}
+
 /// Opens and owns the single long-lived SQLite connection for the app.
 class AppDatabase {
   AppDatabase._(this._db, this._logger);
@@ -225,6 +248,104 @@ class AppDatabase {
     } catch (e) {
       _logger.error('Error fetching pending compressions: $e');
       return [];
+    }
+  }
+
+  /// Columns [advancedSearch] accepts for ORDER BY; anything else falls
+  /// back to created_at (mirrors ecom-py's valid_sort_columns whitelist -
+  /// the sort column is interpolated into SQL, so it MUST be whitelisted).
+  static const List<String> _validSortColumns = [
+    'id',
+    'barcode',
+    'created_at',
+    'duration_seconds',
+    'file_size_mb',
+    'label',
+  ];
+
+  /// Advanced search with filtering, sorting, and pagination - behavioral
+  /// port of ecom-py database.py's advanced_search (SRCH-01..04, SRCH-08).
+  ///
+  /// - [barcode]: partial, case-insensitive match (UPPER LIKE UPPER)
+  /// - [startDate]/[endDate]: inclusive ISO dates (YYYY-MM-DD) compared
+  ///   against DATE(created_at)
+  /// - [label]: exact match
+  /// - [sortBy]: whitelisted column (falls back to created_at)
+  /// - [sortOrder]: 'ASC' or 'DESC' (anything not DESC becomes ASC,
+  ///   matching the reference)
+  ///
+  /// Returns an empty result on error instead of throwing (matches the
+  /// reference's read-query error contract).
+  Future<AdvancedSearchResult> advancedSearch({
+    String? barcode,
+    String? startDate,
+    String? endDate,
+    String? label,
+    String sortBy = 'created_at',
+    String sortOrder = 'DESC',
+    int? limit,
+    int offset = 0,
+  }) async {
+    try {
+      final whereClauses = <String>[];
+      final params = <Object?>[];
+
+      if (barcode != null && barcode.isNotEmpty) {
+        whereClauses.add('UPPER(barcode) LIKE UPPER(?)');
+        params.add('%$barcode%');
+      }
+      if (startDate != null && startDate.isNotEmpty) {
+        whereClauses.add('DATE(created_at) >= ?');
+        params.add(startDate);
+      }
+      if (endDate != null && endDate.isNotEmpty) {
+        whereClauses.add('DATE(created_at) <= ?');
+        params.add(endDate);
+      }
+      if (label != null && label.isNotEmpty) {
+        whereClauses.add('label = ?');
+        params.add(label);
+      }
+
+      final whereClause =
+          whereClauses.isNotEmpty ? 'WHERE ${whereClauses.join(' AND ')}' : '';
+
+      final safeSortBy =
+          _validSortColumns.contains(sortBy) ? sortBy : 'created_at';
+      final safeSortOrder = sortOrder.toUpperCase() == 'DESC' ? 'DESC' : 'ASC';
+
+      final countRows = await _db.rawQuery(
+        'SELECT COUNT(*) AS total FROM transactions $whereClause',
+        params,
+      );
+      final total = (countRows.first['total'] as num?)?.toInt() ?? 0;
+
+      var query = 'SELECT * FROM transactions $whereClause '
+          'ORDER BY $safeSortBy $safeSortOrder';
+      if (limit != null) {
+        query += ' LIMIT $limit OFFSET $offset';
+      }
+
+      final rows = await _db.rawQuery(query, params);
+      final results = rows.map(Transaction.fromRow).toList();
+
+      _logger.info(
+        'Advanced search returned ${results.length} of $total total results',
+      );
+      return AdvancedSearchResult(
+        results: results,
+        total: total,
+        limit: limit,
+        offset: offset,
+      );
+    } catch (e) {
+      _logger.error('Error in advanced search: $e');
+      return AdvancedSearchResult(
+        results: const [],
+        total: 0,
+        limit: limit,
+        offset: offset,
+      );
     }
   }
 
