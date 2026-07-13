@@ -34,6 +34,9 @@ const Map<String, Map<String, Object?>> _defaultSettings = {
     'video_path': 'videos',
     'database_path': 'database.db',
     'log_path': 'logs',
+    // Free-space floor (GB) checked before each recording start (STO-02).
+    // ecom-py has no free-space guard, so this key is new to the port.
+    'min_free_space_gb': 1.0,
   },
   'app': {
     'flask_host': '127.0.0.1',
@@ -123,6 +126,9 @@ class Config {
 
   String get logPath =>
       _resolvePath(_get('storage', 'log_path', 'logs') as String);
+
+  double get minFreeSpaceGb =>
+      (_get('storage', 'min_free_space_gb', 1.0) as num).toDouble();
 
   int get resolutionWidth =>
       (_get('video', 'resolution_width', 1280) as num).toInt();
