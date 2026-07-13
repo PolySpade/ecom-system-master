@@ -26,8 +26,10 @@ import '../core/database.dart';
 import '../core/disk_space.dart';
 import '../core/file_paths.dart';
 import '../core/scan_queue.dart';
+import '../core/video_compressor.dart';
 import '../core/watermark_service.dart';
 import '../models/transaction.dart';
+import 'compression_status_indicator.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
@@ -50,6 +52,7 @@ class MainScreen extends StatefulWidget {
     required this.barcodeHandler,
     required this.barcodeListener,
     required this.watermarkService,
+    required this.compressor,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
     required this.config,
@@ -74,6 +77,11 @@ class MainScreen extends StatefulWidget {
   /// Post-save watermark worker (REC-06 watermark parity). Phase 3 chains
   /// the compression queue onto its job Futures.
   final WatermarkService watermarkService;
+
+  /// Serialized background FFmpeg compression worker (COMP-01); jobs are
+  /// chained onto each recording's watermark Future so compression never
+  /// runs against a file the watermarker is still rewriting.
+  final VideoCompressor compressor;
 
   /// Resolved videos root - used by the disk guard and Open File actions.
   final String videoStoragePath;
@@ -220,16 +228,17 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   }
 
   Future<void> _onRecordingSalvaged(StopRecordingResult result) async {
-    if (_currentTransactionId != null) {
+    final transactionId = _currentTransactionId;
+    if (transactionId != null) {
       await widget.database.completeTransaction(
-        _currentTransactionId!,
+        transactionId,
         durationSeconds: result.duration,
         fileSizeMb: result.fileSizeMb,
         stopMethod: 'camera_failure',
       );
       _currentTransactionId = null;
     }
-    _enqueueWatermark(result);
+    _enqueueWatermark(result, transactionId);
     if (!mounted) return;
     _setStatusBar(
       'Camera failure - recording saved (${result.duration}s)',
@@ -452,16 +461,17 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
       final stopResult = await widget.cameraService.stopRecording(
         stopMethod: stopMethod,
       );
-      if (_currentTransactionId != null) {
+      final transactionId = _currentTransactionId;
+      if (transactionId != null) {
         await widget.database.completeTransaction(
-          _currentTransactionId!,
+          transactionId,
           durationSeconds: stopResult.duration,
           fileSizeMb: stopResult.fileSizeMb,
           stopMethod: stopMethod,
         );
         _currentTransactionId = null;
       }
-      _enqueueWatermark(stopResult);
+      _enqueueWatermark(stopResult, transactionId);
       return stopResult;
     } finally {
       _closeSavingDialog();
@@ -469,9 +479,10 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   }
 
   /// Fire-and-forget: watermarking runs on the WatermarkService's own
-  /// serialized worker so it never delays the next scan. Phase 3 chains
-  /// compression onto this same Future.
-  void _enqueueWatermark(StopRecordingResult stopResult) {
+  /// serialized worker so it never delays the next scan; compression
+  /// (COMP-01) chains onto the watermark Future so it only ever sees the
+  /// finished file.
+  void _enqueueWatermark(StopRecordingResult stopResult, int? transactionId) {
     unawaited(
       widget.watermarkService
           .enqueue(
@@ -482,8 +493,16 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
               recordingStart: stopResult.startTime,
             ),
           )
-          .then((_) {
-        if (mounted) _refreshRecentTransactions();
+          .then((_) async {
+        if (mounted) await _refreshRecentTransactions();
+        if (transactionId != null) {
+          await widget.compressor.queueCompression(
+            stopResult.videoPath,
+            transactionId,
+            CompressionSettings.fromConfig(widget.config),
+          );
+          if (mounted) await _refreshRecentTransactions();
+        }
       }),
     );
   }
@@ -788,19 +807,19 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   }
 
   /// System Status panel (UI-01): recording state, current filename, MM:SS
-  /// duration, storage used (DB-03), compression queue status (placeholder
-  /// until Phase 3 - currently reports watermark queue activity).
+  /// duration, storage used (DB-03), watermark queue, and live compression
+  /// queue (COMP-05, via [CompressionStatusIndicator]).
   Widget _buildStatusPanel() {
     final isRecording = widget.cameraService.isRecording;
     final filename = widget.cameraService.currentFilename ?? '-';
 
-    final String compressionText;
+    final String watermarkText;
     if (widget.watermarkService.isProcessing) {
-      compressionText = 'Watermarking...';
+      watermarkText = 'Watermarking...';
     } else if (widget.watermarkService.pendingCount > 0) {
-      compressionText = 'Queued: ${widget.watermarkService.pendingCount}';
+      watermarkText = 'Queued: ${widget.watermarkService.pendingCount}';
     } else {
-      compressionText = 'Ready';
+      watermarkText = 'Ready';
     }
 
     return Card(
@@ -829,7 +848,9 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
               'Storage Used:',
               '${_storageUsedMb.toStringAsFixed(2)} MB',
             ),
-            _buildStatusRow('Compression:', compressionText),
+            _buildStatusRow('Watermark:', watermarkText),
+            const SizedBox(height: 4),
+            CompressionStatusIndicator(compressor: widget.compressor),
           ],
         ),
       ),

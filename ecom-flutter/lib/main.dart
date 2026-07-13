@@ -15,6 +15,7 @@ import 'core/camera_service.dart';
 import 'core/config.dart';
 import 'core/database.dart';
 import 'core/logger.dart';
+import 'core/video_compressor.dart';
 import 'core/watermark_service.dart';
 import 'ui/main_screen.dart';
 
@@ -80,6 +81,25 @@ Future<void> main() async {
   final barcodeListener = GlobalBarcodeListener();
   final watermarkService = WatermarkService(logger);
 
+  // COMP-01/COMP-05: serialized background compression worker; terminal
+  // outcomes (completed/failed/skipped) persist onto the transaction row,
+  // mirroring ecom-py app_gui.py's compression on_complete callback.
+  final compressor = VideoCompressor(
+    logger,
+    onComplete: (transactionId, success, resultData) {
+      database.updateCompressionStatus(
+        transactionId,
+        resultData['status'] as String? ?? 'failed',
+        compressedFileSizeMb:
+            (resultData['compressed_file_size_mb'] as num?)?.toDouble(),
+        compressionRatio:
+            (resultData['compression_ratio'] as num?)?.toDouble(),
+        compressedFilename: resultData['compressed_filename'] as String?,
+      );
+    },
+  );
+  compressor.start();
+
   runApp(
     EcomVideoTrackerApp(
       cameraService: cameraService,
@@ -87,6 +107,7 @@ Future<void> main() async {
       barcodeHandler: barcodeHandler,
       barcodeListener: barcodeListener,
       watermarkService: watermarkService,
+      compressor: compressor,
       videoStoragePath: config.videoStoragePath,
       minFreeSpaceGb: config.minFreeSpaceGb,
       config: config,
@@ -102,6 +123,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
     required this.barcodeHandler,
     required this.barcodeListener,
     required this.watermarkService,
+    required this.compressor,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
     required this.config,
@@ -112,6 +134,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
   final BarcodeHandler barcodeHandler;
   final GlobalBarcodeListener barcodeListener;
   final WatermarkService watermarkService;
+  final VideoCompressor compressor;
   final String videoStoragePath;
   final double minFreeSpaceGb;
   final Config config;
@@ -170,6 +193,7 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
         barcodeHandler: widget.barcodeHandler,
         barcodeListener: widget.barcodeListener,
         watermarkService: widget.watermarkService,
+        compressor: widget.compressor,
         videoStoragePath: widget.videoStoragePath,
         minFreeSpaceGb: widget.minFreeSpaceGb,
         config: widget.config,
