@@ -15,7 +15,8 @@ import 'package:path/path.dart' as p;
 
 /// Full DEFAULT_SETTINGS map, mirroring
 /// ecom-py/settings_manager.py's SettingsManager.DEFAULT_SETTINGS, reduced
-/// to the categories/keys Phase 1 needs.
+/// to the categories/keys Phases 1 and 3 need (the 'compression' category
+/// matches ecom-py key-for-key).
 const Map<String, Map<String, Object?>> _defaultSettings = {
   'video': {
     'resolution_width': 1280,
@@ -40,6 +41,14 @@ const Map<String, Map<String, Object?>> _defaultSettings = {
     'flask_port': 5000,
     'debug_mode': false,
   },
+  'compression': {
+    'enabled': true,
+    'codec': 'h264', // 'h264' or 'h265'
+    'crf': 23, // 18-35 (lower = better quality)
+    'preset': 'medium', // ultrafast/fast/medium/slow
+    'delete_original': true, // Delete original after successful compression
+    'priority': 'below_normal', // 'low', 'below_normal', or 'normal'
+  },
 };
 
 /// Loads settings.json (if present) beside the executable, deep-merges it
@@ -59,7 +68,13 @@ class Config {
   /// deep-merging over full defaults. Tolerates a missing/invalid file by
   /// falling back to defaults entirely (T-01-03 mitigation).
   static Config load() {
-    final baseDir = p.dirname(Platform.resolvedExecutable);
+    return loadFrom(p.dirname(Platform.resolvedExecutable));
+  }
+
+  /// Same as [load] but with an explicit base directory, so the
+  /// settings.json merge behavior is unit-testable without depending on
+  /// [Platform.resolvedExecutable].
+  static Config loadFrom(String baseDir) {
     final merged = _deepCopyDefaults();
 
     final settingsFile = File(p.join(baseDir, 'settings.json'));
@@ -133,4 +148,30 @@ class Config {
   int get fps => (_get('video', 'fps', 30) as num).toInt();
 
   String get codec => _get('video', 'codec', 'mp4v') as String;
+
+  // Compression settings (COMP-04/SET-06) - keys/defaults mirror
+  // ecom-py/settings_manager.py's 'compression' category exactly.
+
+  bool get compressionEnabled =>
+      _get('compression', 'enabled', true) as bool;
+
+  /// 'h264' or 'h265'.
+  String get compressionCodec =>
+      _get('compression', 'codec', 'h264') as String;
+
+  /// Constant Rate Factor, 18-35 (lower = better quality).
+  int get compressionCrf =>
+      (_get('compression', 'crf', 23) as num).toInt();
+
+  /// FFmpeg preset: ultrafast/fast/medium/slow.
+  String get compressionPreset =>
+      _get('compression', 'preset', 'medium') as String;
+
+  /// Whether the original file is replaced by the compressed one.
+  bool get compressionDeleteOriginal =>
+      _get('compression', 'delete_original', true) as bool;
+
+  /// FFmpeg process priority: 'low', 'below_normal', or 'normal'.
+  String get compressionPriority =>
+      _get('compression', 'priority', 'below_normal') as String;
 }
