@@ -84,4 +84,90 @@ void main() {
       expect(path.contains('${p.separator}Normal${p.separator}'), isTrue);
     });
   });
+
+  group('resolveVideoPath', () {
+    late Directory tempDir;
+    const startTime = '2026-07-13T10:30:00.000';
+
+    setUp(() {
+      tempDir = Directory.systemTemp.createTempSync('resolve_test_');
+    });
+
+    tearDown(() {
+      if (tempDir.existsSync()) {
+        tempDir.deleteSync(recursive: true);
+      }
+    });
+
+    File placeFile(List<String> segments) {
+      final file = File(p.joinAll([tempDir.path, ...segments]));
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync('video');
+      return file;
+    }
+
+    test('resolves the labeled layout from start time + label', () {
+      final file = placeFile(
+        ['2026-07-13', 'Return and Refund', 'x.mp4'],
+      );
+
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: startTime,
+        label: 'Return and Refund Unboxing',
+        videoFilename: 'x.mp4',
+      );
+
+      expect(resolved, file.path);
+    });
+
+    test('falls back to the pre-label legacy layout', () {
+      final file = placeFile(['2026-07-13', 'x.mp4']);
+
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: startTime,
+        label: 'Normal (Standard)',
+        videoFilename: 'x.mp4',
+      );
+
+      expect(resolved, file.path);
+    });
+
+    test('absolute filenames (Phase-1 spike rows) pass through when present',
+        () {
+      final file = placeFile(['abs.mp4']);
+
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: startTime,
+        label: 'Normal (Standard)',
+        videoFilename: file.path,
+      );
+
+      expect(resolved, file.path);
+    });
+
+    test('returns null when the file cannot be found anywhere', () {
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: startTime,
+        label: 'Normal (Standard)',
+        videoFilename: 'missing.mp4',
+      );
+
+      expect(resolved, isNull);
+    });
+
+    test('returns null for an unparseable start time', () {
+      final resolved = resolveVideoPath(
+        tempDir.path,
+        startTime: 'not-a-date',
+        label: 'Normal (Standard)',
+        videoFilename: 'x.mp4',
+      );
+
+      expect(resolved, isNull);
+    });
+  });
 }
