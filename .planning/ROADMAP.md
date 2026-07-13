@@ -6,7 +6,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Scan-Record-Save Spike** - A minimal Flutter app on real target hardware proves barcode-triggered start/stop-and-start/stop recording, live preview, and a schema-compatible SQLite log — de-risking the camera pipeline before any further UI is built.
+- [x] **Phase 1: Scan-Record-Save Spike** - A minimal Flutter app on real target hardware proves barcode-triggered start/stop-and-start/stop recording, live preview, and a schema-compatible SQLite log — de-risking the camera pipeline before any further UI is built. *(Completed 2026-07-13 — A1/A2/A3 all CONFIRMED, see ecom-flutter/SPIKE_RESULTS.md)*
 - [ ] **Phase 2: Full Recording Workflow** - The recording loop reaches parity: non-blocking save, Video Label routing (folder/watermark/DB), burned-in watermarks, camera auto-reinit, disk-space guard, exit confirmation, and the real main-window UI.
 - [ ] **Phase 3: Compression Pipeline** - Completed recordings are automatically compressed in the background via a serialized FFmpeg worker with atomic file replacement, without ever blocking recording.
 - [ ] **Phase 4: Search & Settings** - Operators can find any past recording via full-featured search and can reconfigure camera, storage, and compression behavior via a settings dialog — matching the reference app's operational surface.
@@ -40,7 +40,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md — Windows hardware validation spike (back-to-back recording, focus-independence, enumeration, release build)
+- [x] 01-03-PLAN.md — Windows hardware validation spike (back-to-back recording, focus-independence, enumeration, release build)
 
 **UI hint**: yes
 
@@ -114,7 +114,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Scan-Record-Save Spike | 2/3 | In Progress|  |
+| 1. Scan-Record-Save Spike | 3/3 | Complete | 2026-07-13 |
 | 2. Full Recording Workflow | 0/TBD | Not started | - |
 | 3. Compression Pipeline | 0/TBD | Not started | - |
 | 4. Search & Settings | 0/TBD | Not started | - |
