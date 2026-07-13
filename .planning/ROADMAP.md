@@ -115,9 +115,9 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Scan-Record-Save Spike | 3/3 | Complete | 2026-07-13 |
-| 2. Full Recording Workflow | 0/TBD | Not started | - |
-| 3. Compression Pipeline | 0/TBD | Not started | - |
-| 4. Search & Settings | 0/TBD | Not started | - |
+| 2. Full Recording Workflow | 1/1 | Code complete - hardware verification pending | - |
+| 3. Compression Pipeline | 1/1 | Code complete - hardware verification pending | - |
+| 4. Search & Settings | 1/1 | Code complete - visual verification pending | - |
 | 5. Hardening & Packaging | 0/TBD | Not started | - |
 
 ---
