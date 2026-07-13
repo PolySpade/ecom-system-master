@@ -5,12 +5,19 @@
 /// threading implementation. camera_windows' native Media Foundation
 /// CaptureEngine owns frame capture/encoding; this class only drives the
 /// plugin's start/stop API and manages file placement + bookkeeping.
+///
+/// CAM-04: a periodic health monitor detects a failed/disconnected camera
+/// (controller error state) and reinitializes it with a cooldown and
+/// non-reentrant guard, porting _try_reinitialize_camera's behavior
+/// (consecutive-failure counter, 5s cooldown, no app restart).
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/widgets.dart';
+import 'package:path/path.dart' as p;
 
 import 'file_paths.dart';
 import 'logger.dart';
@@ -22,6 +29,10 @@ class StopRecordingResult {
     required this.duration,
     required this.fileSizeMb,
     required this.labelFolder,
+    required this.videoPath,
+    required this.barcode,
+    required this.label,
+    required this.startTime,
   });
 
   /// Basename of the saved video file.
@@ -35,10 +46,23 @@ class StopRecordingResult {
 
   /// The label folder the video was saved under (e.g. "Normal").
   final String labelFolder;
+
+  /// Full path of the saved video file (input to the post-save watermark
+  /// step, and later the Phase-3 compression queue).
+  final String videoPath;
+
+  /// Normalized barcode the recording was tagged with.
+  final String barcode;
+
+  /// The Video Label the recording was started with.
+  final String label;
+
+  /// When the recording started (seeds the watermark's running timestamp).
+  final DateTime startTime;
 }
 
 /// Thin wrapper around [CameraController]: init, start/stop recording,
-/// preview, and current-recording-state getters.
+/// preview, current-recording-state getters, and auto-reinit (CAM-04).
 class CameraService {
   CameraService(this._videoStoragePath, this._logger);
 
@@ -50,17 +74,54 @@ class CameraService {
   String? _currentFilename;
   String? _currentLabel;
   String? _currentLabelFolder;
+  String? _currentBarcode;
   String? _targetVideoPath;
 
+  // CAM-04 auto-reinit state (ports camera_handler.py's counters).
+  int _cameraIndex = 0;
+  int _consecutiveFailures = 0;
+  DateTime? _lastReinitTime;
+  bool _reinitInProgress = false;
+  Timer? _healthTimer;
+  bool _disposed = false;
+
+  /// Cooldown between reinitialization attempts (matches ecom-py's 5.0s).
+  static const Duration reinitCooldown = Duration(seconds: 5);
+
+  /// Health-check polling interval.
+  static const Duration _healthCheckInterval = Duration(seconds: 2);
+
+  /// Invoked whenever camera availability changes (reinit started/finished)
+  /// so the UI can rebuild the preview/status.
+  void Function()? onCameraStateChanged;
+
+  /// Invoked when an in-progress recording had to be force-stopped because
+  /// the camera failed; carries the salvage result (the video file was
+  /// saved) so the UI can complete the DB transaction.
+  void Function(StopRecordingResult result)? onRecordingSalvaged;
+
   /// Basename of the in-progress recording; null when idle. Single source
-  /// of truth for the RECORDING overlay (consumed by Plan 02 Task 2).
+  /// of truth for the RECORDING overlay.
   String? get currentFilename => _currentFilename;
 
   /// Label of the in-progress recording; null when idle.
   String? get currentLabel => _currentLabel;
 
+  /// Barcode of the in-progress recording; null when idle.
+  String? get currentBarcode => _currentBarcode;
+
+  /// Start time of the in-progress recording; null when idle. Drives the
+  /// main window's MM:SS duration ticker (UI-01).
+  DateTime? get recordingStartTime => _recordingStartTime;
+
   /// Whether a recording is currently in progress.
   bool get isRecording => _controller?.value.isRecordingVideo ?? false;
+
+  /// Whether the camera is initialized and error-free.
+  bool get isCameraHealthy =>
+      _controller != null &&
+      _controller!.value.isInitialized &&
+      !_controller!.value.hasError;
 
   /// The initialized preview's aspect ratio (width / height), used by
   /// main_screen.dart to keep the preview's proportions correct while it
@@ -78,6 +139,7 @@ class CameraService {
   /// Initializes the camera at [cameraIndex]. Must be called before
   /// [buildPreview] or [startRecording].
   Future<void> init(int cameraIndex) async {
+    _cameraIndex = cameraIndex;
     final cameras = await availableCameras();
     if (cameras.isEmpty) {
       throw StateError('No cameras available');
@@ -92,6 +154,92 @@ class CameraService {
     );
     await controller.initialize();
     _controller = controller;
+    _consecutiveFailures = 0;
+    onCameraStateChanged?.call();
+  }
+
+  /// Starts the periodic camera health monitor (CAM-04). Safe to call more
+  /// than once.
+  void startHealthMonitor() {
+    _healthTimer ??= Timer.periodic(
+      _healthCheckInterval,
+      (_) => _checkCameraHealth(),
+    );
+  }
+
+  /// Stops the health monitor.
+  void stopHealthMonitor() {
+    _healthTimer?.cancel();
+    _healthTimer = null;
+  }
+
+  Future<void> _checkCameraHealth() async {
+    if (_disposed || _reinitInProgress) return;
+
+    if (isCameraHealthy) {
+      _consecutiveFailures = 0;
+      return;
+    }
+
+    _consecutiveFailures++;
+    final last = _lastReinitTime;
+    if (last != null && DateTime.now().difference(last) < reinitCooldown) {
+      return; // Cooldown between reinit attempts (matches ecom-py).
+    }
+    _logger.warning(
+      'Camera unhealthy ($_consecutiveFailures consecutive checks), '
+      'attempting reinit...',
+    );
+    await _tryReinitializeCamera();
+  }
+
+  /// Attempts to reinitialize the camera after failures. Non-reentrant with
+  /// a cooldown, porting ecom-py's _try_reinitialize_camera.
+  Future<void> _tryReinitializeCamera() async {
+    if (_reinitInProgress) return; // Another reinit in progress.
+    _reinitInProgress = true;
+
+    try {
+      _lastReinitTime = DateTime.now();
+      _logger.info('Attempting camera reinitialization...');
+
+      // Salvage an in-progress recording if any - never lose the video.
+      if (isRecording) {
+        _logger.warning(
+          'Camera failed while recording - attempting to salvage '
+          'in-progress video',
+        );
+        try {
+          final result = await stopRecording(stopMethod: 'camera_failure');
+          onRecordingSalvaged?.call(result);
+        } catch (e) {
+          _logger.error('Could not salvage in-progress recording: $e');
+          _clearRecordingState();
+        }
+      }
+
+      // Release the existing controller.
+      final old = _controller;
+      _controller = null;
+      onCameraStateChanged?.call();
+      if (old != null) {
+        try {
+          await old.dispose();
+        } catch (_) {
+          // Disposal failures on a dead device are expected.
+        }
+      }
+
+      await init(_cameraIndex);
+      _logger.info('Camera reinitialized successfully');
+    } catch (e) {
+      _logger.warning(
+        'Camera reinitialization failed - device may be disconnected: $e',
+      );
+    } finally {
+      _reinitInProgress = false;
+      onCameraStateChanged?.call();
+    }
   }
 
   /// Returns the live camera preview widget. [init] must have completed.
@@ -124,9 +272,10 @@ class CameraService {
     try {
       await controller.startVideoRecording();
 
-      _currentFilename = videoPath.split(Platform.pathSeparator).last;
+      _currentFilename = p.basename(videoPath);
       _currentLabel = label;
       _currentLabelFolder = labelFolder;
+      _currentBarcode = barcode;
       _targetVideoPath = videoPath;
       _recordingStartTime = DateTime.now();
 
@@ -135,11 +284,7 @@ class CameraService {
       );
       return videoPath;
     } catch (e) {
-      _currentFilename = null;
-      _currentLabel = null;
-      _currentLabelFolder = null;
-      _targetVideoPath = null;
-      _recordingStartTime = null;
+      _clearRecordingState();
       _logger.error('Error starting recording: $e');
       rethrow;
     }
@@ -162,16 +307,24 @@ class CameraService {
 
       final filename = _currentFilename!;
       final labelFolder = _currentLabelFolder ?? 'Normal';
+      final label = _currentLabel ?? 'Normal (Standard)';
+      final barcode = _currentBarcode ?? '';
       final targetPath = _targetVideoPath!;
       final startTime = _recordingStartTime!;
 
-      // Move/rename the plugin's output file to the target path if it
-      // wrote elsewhere.
+      // Move the plugin's output file to the target path if it wrote
+      // elsewhere. Rename first (instant on the same volume - keeps the
+      // save non-blocking, REC-04); fall back to copy+delete across
+      // volumes.
       if (xfile.path != targetPath) {
         final sourceFile = File(xfile.path);
         if (await sourceFile.exists()) {
-          await sourceFile.copy(targetPath);
-          await sourceFile.delete();
+          try {
+            await sourceFile.rename(targetPath);
+          } on FileSystemException {
+            await sourceFile.copy(targetPath);
+            await sourceFile.delete();
+          }
         }
       }
 
@@ -186,17 +339,17 @@ class CameraService {
         '${fileSizeMb.toStringAsFixed(2)}MB) in $labelFolder',
       );
 
-      _currentFilename = null;
-      _currentLabel = null;
-      _currentLabelFolder = null;
-      _targetVideoPath = null;
-      _recordingStartTime = null;
+      _clearRecordingState();
 
       return StopRecordingResult(
         filename: filename,
         duration: duration,
         fileSizeMb: fileSizeMb,
         labelFolder: labelFolder,
+        videoPath: targetPath,
+        barcode: barcode,
+        label: label,
+        startTime: startTime,
       );
     } catch (e) {
       _logger.error('Error stopping recording: $e');
@@ -204,8 +357,19 @@ class CameraService {
     }
   }
 
-  /// Releases the camera controller.
+  void _clearRecordingState() {
+    _currentFilename = null;
+    _currentLabel = null;
+    _currentLabelFolder = null;
+    _currentBarcode = null;
+    _targetVideoPath = null;
+    _recordingStartTime = null;
+  }
+
+  /// Releases the camera controller and stops the health monitor.
   Future<void> dispose() async {
+    _disposed = true;
+    stopHealthMonitor();
     await _controller?.dispose();
     _controller = null;
   }
