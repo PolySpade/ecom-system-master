@@ -83,6 +83,13 @@ class Config {
 
   String get codec => settingsManager.getVideoCodec();
 
+  /// Recording bitrate cap in kbit/s (0 = camera default). New key for the
+  /// port - caps the Media Foundation encoder so originals are small enough
+  /// that post-compression is optional.
+  int get recordingBitrateKbps =>
+      (settingsManager.get('video', 'recording_bitrate_kbps', 6000)! as num)
+          .toInt();
+
   // Compression settings (COMP-04/SET-06) - keys/defaults mirror
   // ecom-py/settings_manager.py's 'compression' category exactly.
 

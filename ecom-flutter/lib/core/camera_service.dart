@@ -91,6 +91,8 @@ class CameraService {
   // CAM-04 auto-reinit state (ports camera_handler.py's counters).
   int _cameraIndex = 0;
   ResolutionPreset _resolutionPreset = ResolutionPreset.high;
+  int? _fps;
+  int? _videoBitrate;
   int _consecutiveFailures = 0;
   DateTime? _lastReinitTime;
   bool _reinitInProgress = false;
@@ -151,14 +153,21 @@ class CameraService {
   /// Initializes the camera at [cameraIndex]. Must be called before
   /// [buildPreview] or [startRecording]. [resolutionPreset] maps the
   /// configured resolution onto the plugin's preset ladder (see
-  /// [resolutionPresetFor]). Index and preset are remembered so the CAM-04
-  /// auto-reinit path restores the same configuration.
+  /// [resolutionPresetFor]); [fps] and [videoBitrate] (bits/second) cap the
+  /// capture rate and the Media Foundation encoder's bitrate - without an
+  /// explicit bitrate the camera encodes at ~15-19 Mbit/s. All values are
+  /// remembered so the CAM-04 auto-reinit path restores the same
+  /// configuration.
   Future<void> init(
     int cameraIndex, {
     ResolutionPreset resolutionPreset = ResolutionPreset.high,
+    int? fps,
+    int? videoBitrate,
   }) async {
     _cameraIndex = cameraIndex;
     _resolutionPreset = resolutionPreset;
+    _fps = fps;
+    _videoBitrate = videoBitrate;
     final cameras = await availableCameras();
     if (cameras.isEmpty) {
       throw StateError('No cameras available');
@@ -170,6 +179,8 @@ class CameraService {
       description,
       resolutionPreset,
       enableAudio: false,
+      fps: fps,
+      videoBitrate: videoBitrate,
     );
     await controller.initialize();
     _controller = controller;
@@ -252,7 +263,12 @@ class CameraService {
         }
       }
 
-      await init(_cameraIndex, resolutionPreset: _resolutionPreset);
+      await init(
+        _cameraIndex,
+        resolutionPreset: _resolutionPreset,
+        fps: _fps,
+        videoBitrate: _videoBitrate,
+      );
       _logger.info('Camera reinitialized successfully');
     } catch (e) {
       _logger.warning(
@@ -271,6 +287,8 @@ class CameraService {
   Future<void> reinitialize(
     int cameraIndex, {
     ResolutionPreset resolutionPreset = ResolutionPreset.high,
+    int? fps,
+    int? videoBitrate,
   }) async {
     if (isRecording) {
       throw StateError('Cannot reinitialize while recording');
@@ -278,7 +296,12 @@ class CameraService {
     _logger.info('Reinitializing camera (index $cameraIndex)');
     final monitorWasRunning = _healthTimer != null;
     await dispose();
-    await init(cameraIndex, resolutionPreset: resolutionPreset);
+    await init(
+      cameraIndex,
+      resolutionPreset: resolutionPreset,
+      fps: fps,
+      videoBitrate: videoBitrate,
+    );
     if (monitorWasRunning) {
       startHealthMonitor();
     }

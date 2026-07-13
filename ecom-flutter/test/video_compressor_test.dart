@@ -280,6 +280,51 @@ void main() {
     });
   });
 
+  group('watermark single-pass (-vf)', () {
+    test('videoFilter is injected before the codec args', () async {
+      final input = createInput('video.mp4');
+      final compressor = buildCompressor();
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        5,
+        const CompressionSettings(),
+        videoFilter: 'drawtext=x=1',
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      final (_, args) = startedCommands.single;
+      final vf = args.indexOf('-vf');
+      expect(vf, greaterThan(-1));
+      expect(args[vf + 1], 'drawtext=x=1');
+      expect(vf, lessThan(args.indexOf('-c:v')));
+
+      processes.single.completeWith(1); // fail fast to end the job
+      await compressor.stop();
+    });
+
+    test('a filtered job runs even when compression is disabled '
+        '(the watermark requires the encode regardless)', () async {
+      final input = createInput('video.mp4');
+      final compressor = buildCompressor();
+      compressor.start();
+
+      final queued = await compressor.queueCompression(
+        input.path,
+        6,
+        const CompressionSettings(enabled: false),
+        videoFilter: 'drawtext=x=1',
+      );
+
+      expect(queued, isTrue);
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+      expect(startedCommands, hasLength(1));
+
+      processes.single.completeWith(1);
+      await compressor.stop();
+    });
+  });
+
   group('atomic replacement (COMP-03)', () {
     test('deleteOriginal=true swaps compressed file into place', () async {
       final input = createInput('video.mp4', sizeBytes: 1000);

@@ -16,7 +16,7 @@ import 'core/config.dart';
 import 'core/database.dart';
 import 'core/logger.dart';
 import 'core/video_compressor.dart';
-import 'core/watermark_service.dart';
+import 'core/startup_cleanup.dart';
 import 'ui/main_screen.dart';
 
 /// Minimum window size (CAM-02) - the app refuses to shrink below this.
@@ -61,6 +61,14 @@ Future<void> main() async {
   logger.info('Application starting');
 
   final database = await AppDatabase.open(config.databasePath, logger);
+  // Jobs killed mid-flight (app closed during FFmpeg) return to the
+  // Compress All backlog; their partial temp files are junk - remove them.
+  await database.resetStuckProcessing();
+  await cleanStaleTempFiles(
+    config.videoStoragePath,
+    deleteOriginalMode: config.compressionDeleteOriginal,
+    logger: logger,
+  );
 
   final cameraService = CameraService(config.videoStoragePath, logger);
   try {
@@ -70,6 +78,12 @@ Future<void> main() async {
         config.resolutionWidth,
         config.resolutionHeight,
       ),
+      fps: config.fps,
+      // Cap the Media Foundation encoder (~15-19 Mbit/s uncapped) so
+      // originals are already small; 0 = camera default.
+      videoBitrate: config.recordingBitrateKbps > 0
+          ? config.recordingBitrateKbps * 1000
+          : null,
     );
   } catch (e) {
     logger.error('Error initializing camera: $e');
@@ -79,7 +93,6 @@ Future<void> main() async {
 
   final barcodeHandler = BarcodeHandler();
   final barcodeListener = GlobalBarcodeListener();
-  final watermarkService = WatermarkService(logger);
 
   // COMP-01/COMP-05: serialized background compression worker; terminal
   // outcomes (completed/failed/skipped) persist onto the transaction row,
@@ -106,7 +119,6 @@ Future<void> main() async {
       database: database,
       barcodeHandler: barcodeHandler,
       barcodeListener: barcodeListener,
-      watermarkService: watermarkService,
       compressor: compressor,
       videoStoragePath: config.videoStoragePath,
       minFreeSpaceGb: config.minFreeSpaceGb,
@@ -122,7 +134,6 @@ class EcomVideoTrackerApp extends StatefulWidget {
     required this.database,
     required this.barcodeHandler,
     required this.barcodeListener,
-    required this.watermarkService,
     required this.compressor,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
@@ -133,7 +144,6 @@ class EcomVideoTrackerApp extends StatefulWidget {
   final AppDatabase database;
   final BarcodeHandler barcodeHandler;
   final GlobalBarcodeListener barcodeListener;
-  final WatermarkService watermarkService;
   final VideoCompressor compressor;
   final String videoStoragePath;
   final double minFreeSpaceGb;
@@ -192,7 +202,6 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
         database: widget.database,
         barcodeHandler: widget.barcodeHandler,
         barcodeListener: widget.barcodeListener,
-        watermarkService: widget.watermarkService,
         compressor: widget.compressor,
         videoStoragePath: widget.videoStoragePath,
         minFreeSpaceGb: widget.minFreeSpaceGb,

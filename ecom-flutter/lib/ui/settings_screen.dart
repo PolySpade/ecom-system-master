@@ -39,6 +39,19 @@ const List<(String, String)> _kCodecOptions = [
 /// FPS options, matching SettingsDialog.FPS_OPTIONS (SET-02).
 const List<int> _kFpsOptions = [15, 24, 30, 60];
 
+/// Recording bitrate options in kbit/s (0 = camera default, which on this
+/// hardware means ~15-19 Mbit/s from the Media Foundation encoder). New
+/// setting for the port - lets originals come out small enough that
+/// post-compression is optional.
+const List<(String, int)> _kBitrateOptions = [
+  ('2 Mbit/s (smallest)', 2000),
+  ('4 Mbit/s', 4000),
+  ('6 Mbit/s (recommended)', 6000),
+  ('8 Mbit/s', 8000),
+  ('12 Mbit/s', 12000),
+  ('Camera default (largest)', 0),
+];
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
@@ -64,6 +77,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late String _resolutionPreset;
   late int _fps;
   late String _codec;
+  late int _bitrateKbps;
 
   // --- Camera tab state ---
   List<CameraDescription> _cameras = [];
@@ -84,6 +98,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final String _originalResolutionPreset;
   late final int _originalFps;
   late final String _originalCodec;
+  late final int _originalBitrateKbps;
 
   @override
   void initState() {
@@ -94,6 +109,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _resolutionPreset = _presetNameFor(width, height);
     _fps = _kFpsOptions.contains(sm.getVideoFps()) ? sm.getVideoFps() : 30;
     _codec = _codecNameFor(sm.getVideoCodec());
+    final storedBitrate =
+        (sm.get('video', 'recording_bitrate_kbps', 6000)! as num).toInt();
+    _bitrateKbps = _kBitrateOptions.any((o) => o.$2 == storedBitrate)
+        ? storedBitrate
+        : 6000;
 
     _cameraIndex = sm.getCameraIndex();
     _autoExposure = sm.getCameraAutoExposure();
@@ -110,6 +130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _originalResolutionPreset = _resolutionPreset;
     _originalFps = _fps;
     _originalCodec = _codec;
+    _originalBitrateKbps = _bitrateKbps;
 
     _refreshCameras();
   }
@@ -192,6 +213,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Text(
           'Note: the Windows capture backend maps the resolution to its '
           'nearest supported preset.',
+          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 16),
+        DropdownButtonFormField<int>(
+          initialValue: _bitrateKbps,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'Recording Bitrate',
+            border: OutlineInputBorder(),
+          ),
+          items: [
+            for (final (name, kbps) in _kBitrateOptions)
+              DropdownMenuItem(value: kbps, child: Text(name)),
+          ],
+          onChanged: (value) =>
+              setState(() => _bitrateKbps = value ?? _bitrateKbps),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Caps the camera encoder so recordings are small straight from '
+          'the camera. At 6 Mbit/s an hour of video is ~2.7 GB before '
+          'compression; the camera default writes ~15-19 Mbit/s.',
           style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
         ),
         const SizedBox(height: 16),
@@ -609,6 +652,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'resolution_height': height,
       'fps': _fps,
       'codec': _selectedCodec,
+      'recording_bitrate_kbps': _bitrateKbps,
     });
     sm.updateCategory('camera', {
       'index': _cameraIndex,
@@ -636,7 +680,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final captureAffecting = _cameraIndex != _originalCameraIndex ||
         _resolutionPreset != _originalResolutionPreset ||
         _fps != _originalFps ||
-        _codec != _originalCodec;
+        _codec != _originalCodec ||
+        _bitrateKbps != _originalBitrateKbps;
 
     if (captureAffecting) {
       final error = await _reinitializeCameraWithProgress(width, height);
@@ -690,6 +735,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await widget.cameraService.reinitialize(
         _cameraIndex,
         resolutionPreset: resolutionPresetFor(width, height),
+        fps: _fps,
+        videoBitrate: _bitrateKbps > 0 ? _bitrateKbps * 1000 : null,
       );
     } catch (e) {
       error = '$e';

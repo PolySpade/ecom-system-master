@@ -33,6 +33,10 @@ class SettingsManager {
       'resolution_height': 720,
       'fps': 30,
       'codec': 'mp4v',
+      // Recording bitrate cap (kbit/s) applied to the camera's Media
+      // Foundation encoder. Without it the webcam writes ~15-19 Mbit/s.
+      // New key for the port (ecom-py records via OpenCV, no bitrate knob).
+      'recording_bitrate_kbps': 6000,
     },
     'camera': {
       'index': 0,

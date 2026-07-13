@@ -89,11 +89,17 @@ class CompressionJob {
     required this.videoPath,
     required this.transactionId,
     required this.settings,
+    this.videoFilter,
   });
 
   final String videoPath;
   final int transactionId;
   final CompressionSettings settings;
+
+  /// Optional -vf filtergraph applied during the encode (the watermark
+  /// burn-in). Merging the watermark into the compression pass means every
+  /// recording is re-encoded exactly once.
+  final String? videoFilter;
   String? outputPath;
 }
 
@@ -232,12 +238,19 @@ class VideoCompressor {
   /// compression is disabled or FFmpeg is unavailable the job is skipped
   /// gracefully (logged + 'skipped' callback, recording never affected);
   /// a missing input file reports 'failed'.
+  ///
+  /// [videoFilter] burns the watermark during the same encode. A job with a
+  /// filter runs even when compression is disabled - the watermark requires
+  /// a re-encode regardless, and encoding once at the configured CRF is
+  /// strictly cheaper than a separate watermark pass. The enabled toggle
+  /// still governs plain (filter-less) backlog jobs.
   Future<bool> queueCompression(
     String videoPath,
     int transactionId,
-    CompressionSettings settings,
-  ) async {
-    if (!settings.enabled) {
+    CompressionSettings settings, {
+    String? videoFilter,
+  }) async {
+    if (!settings.enabled && videoFilter == null) {
       _logger.info('Compression disabled, skipping $videoPath');
       _onComplete?.call(transactionId, true, {
         'status': CompressionStatus.skipped.value,
@@ -272,6 +285,7 @@ class VideoCompressor {
       videoPath: videoPath,
       transactionId: transactionId,
       settings: settings,
+      videoFilter: videoFilter,
     ));
     _logger.info(
       'Queued compression job for transaction $transactionId: $videoPath',
@@ -423,6 +437,7 @@ class VideoCompressor {
     // a stale temp file.
     final args = <String>[
       '-i', job.videoPath,
+      if (job.videoFilter != null) ...['-vf', job.videoFilter!],
       '-c:v', videoCodec,
       '-crf', '$crf',
       '-preset', settings.preset,

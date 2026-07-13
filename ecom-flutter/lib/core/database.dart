@@ -351,6 +351,21 @@ class AppDatabase {
     }
   }
 
+  /// Resets rows stuck in compression_status='processing' back to
+  /// 'pending' (a job that was mid-flight when the app was killed). Run at
+  /// startup so interrupted jobs reappear in the Compress All backlog.
+  Future<int> resetStuckProcessing() async {
+    final n = await _db.update(
+      'transactions',
+      {'compression_status': 'pending'},
+      where: "compression_status = 'processing'",
+    );
+    if (n > 0) {
+      _logger.info('Reset $n interrupted compression job(s) to pending');
+    }
+    return n;
+  }
+
   /// Deletes every transaction row (Settings > Clear Database). Returns the
   /// number of rows removed. Does not touch video files on disk.
   Future<int> clearAllTransactions() async {

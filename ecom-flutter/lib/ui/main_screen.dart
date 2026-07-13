@@ -51,7 +51,6 @@ class MainScreen extends StatefulWidget {
     required this.database,
     required this.barcodeHandler,
     required this.barcodeListener,
-    required this.watermarkService,
     required this.compressor,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
@@ -74,13 +73,9 @@ class MainScreen extends StatefulWidget {
   /// start/stop/DB orchestration.
   final GlobalBarcodeListener barcodeListener;
 
-  /// Post-save watermark worker (REC-06 watermark parity). Phase 3 chains
-  /// the compression queue onto its job Futures.
-  final WatermarkService watermarkService;
-
-  /// Serialized background FFmpeg compression worker (COMP-01); jobs are
-  /// chained onto each recording's watermark Future so compression never
-  /// runs against a file the watermarker is still rewriting.
+  /// Serialized background FFmpeg worker (COMP-01). Each recording gets
+  /// ONE post-save job that burns the watermark (REC-06) and compresses in
+  /// a single encode.
   final VideoCompressor compressor;
 
   /// Resolved videos root - used by the disk guard and Open File actions.
@@ -139,8 +134,9 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     widget.cameraService.onCameraStateChanged = _onCameraStateChanged;
     widget.cameraService.onRecordingSalvaged = _onRecordingSalvaged;
 
-    // Watermark queue status hook (feeds the status panel).
-    widget.watermarkService.onQueueChanged = _onWatermarkQueueChanged;
+    // Refresh the recent list (compression glyphs, backlog count) whenever
+    // the compressor's queue state changes.
+    widget.compressor.queueStatus.addListener(_onCompressorQueueChanged);
 
     // 1s refresh: duration ticker + storage used (UI-01/DB-03).
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -158,6 +154,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     windowManager.removeListener(this);
     _ticker?.cancel();
     _statusBarTimer?.cancel();
+    widget.compressor.queueStatus.removeListener(_onCompressorQueueChanged);
     _barcodeController.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -232,8 +229,8 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     if (mounted) setState(() {});
   }
 
-  void _onWatermarkQueueChanged() {
-    if (mounted) setState(() {});
+  void _onCompressorQueueChanged() {
+    if (mounted) _refreshRecentTransactions();
   }
 
   Future<void> _onRecordingSalvaged(StopRecordingResult result) async {
@@ -247,7 +244,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
       );
       _currentTransactionId = null;
     }
-    _enqueueWatermark(result, transactionId);
+    _enqueuePostProcess(result, transactionId);
     if (!mounted) return;
     _setStatusBar(
       'Camera failure - recording saved (${result.duration}s)',
@@ -525,39 +522,43 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
         );
         _currentTransactionId = null;
       }
-      _enqueueWatermark(stopResult, transactionId);
+      _enqueuePostProcess(stopResult, transactionId);
       return stopResult;
     } finally {
       _closeSavingDialog();
     }
   }
 
-  /// Fire-and-forget: watermarking runs on the WatermarkService's own
-  /// serialized worker so it never delays the next scan; compression
-  /// (COMP-01) chains onto the watermark Future so it only ever sees the
-  /// finished file.
-  void _enqueueWatermark(StopRecordingResult stopResult, int? transactionId) {
+  /// Fire-and-forget: queues the single post-save FFmpeg pass that burns
+  /// the watermark AND compresses in one encode (never delays the next
+  /// scan - the compressor's worker is serialized off the UI path). When
+  /// no usable font exists the pass still runs as a plain compression.
+  void _enqueuePostProcess(StopRecordingResult stopResult, int? transactionId) {
+    if (transactionId == null) return;
+
+    final font = findWindowsFontFile();
+    String? filter;
+    if (font != null) {
+      filter = buildWatermarkFilter(
+        fontFile: font,
+        barcode: stopResult.barcode,
+        label: stopResult.label,
+        startEpochSeconds:
+            stopResult.startTime.millisecondsSinceEpoch ~/ 1000,
+      );
+    }
+
+    _sessionQueuedCompressionIds.add(transactionId);
     unawaited(
-      widget.watermarkService
-          .enqueue(
-            WatermarkJob(
-              videoPath: stopResult.videoPath,
-              barcode: stopResult.barcode,
-              label: stopResult.label,
-              recordingStart: stopResult.startTime,
-            ),
-          )
-          .then((_) async {
-        if (mounted) await _refreshRecentTransactions();
-        if (transactionId != null) {
-          _sessionQueuedCompressionIds.add(transactionId);
-          await widget.compressor.queueCompression(
+      widget.compressor
+          .queueCompression(
             stopResult.videoPath,
             transactionId,
             CompressionSettings.fromConfig(widget.config),
-          );
-          if (mounted) await _refreshRecentTransactions();
-        }
+            videoFilter: filter,
+          )
+          .then((_) async {
+        if (mounted) await _refreshRecentTransactions();
       }),
     );
   }
@@ -863,20 +864,12 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   }
 
   /// System Status panel (UI-01): recording state, current filename, MM:SS
-  /// duration, storage used (DB-03), watermark queue, and live compression
-  /// queue (COMP-05, via [CompressionStatusIndicator]).
+  /// duration, storage used (DB-03), and the live watermark+compression
+  /// queue (COMP-05, via [CompressionStatusIndicator] - one FFmpeg pass
+  /// does both).
   Widget _buildStatusPanel() {
     final isRecording = widget.cameraService.isRecording;
     final filename = widget.cameraService.currentFilename ?? '-';
-
-    final String watermarkText;
-    if (widget.watermarkService.isProcessing) {
-      watermarkText = 'Watermarking...';
-    } else if (widget.watermarkService.pendingCount > 0) {
-      watermarkText = 'Queued: ${widget.watermarkService.pendingCount}';
-    } else {
-      watermarkText = 'Ready';
-    }
 
     return Card(
       child: Padding(
@@ -904,7 +897,6 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
               'Storage Used:',
               '${_storageUsedMb.toStringAsFixed(2)} MB',
             ),
-            _buildStatusRow('Watermark:', watermarkText),
             const SizedBox(height: 4),
             CompressionStatusIndicator(compressor: widget.compressor),
             // Backlog tracker: older recordings whose compression never ran
