@@ -130,3 +130,7 @@ None for the test suite. End-to-end verification (a real recording actually comp
 ---
 *Phase: 03-compression-pipeline*
 *Completed: 2026-07-13*
+
+## Self-Check: PASSED
+
+All created files verified present on disk (ffmpeg_locator.dart, video_compressor.dart, process_priority.dart, compression_status_indicator.dart + 4 test suites); all five task commits (`413bc62`, `09ccf11`, `2556720`, `7966ba9`, `0aee173`) verified in git log; final gate re-run: `flutter analyze` clean, `flutter test` 63/63 passing; `git diff HEAD -- lib/ui/main_screen.dart lib/main.dart` empty (Phase-2-owned files untouched).
