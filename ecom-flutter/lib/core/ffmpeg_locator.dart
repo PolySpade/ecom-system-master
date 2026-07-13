@@ -1,101 +1,116 @@
-/// FFmpeg Locator - finds the ffmpeg/ffprobe binaries on this machine.
+/// FFmpeg Locator - discovers ffmpeg/ffprobe binaries at runtime (COMP-02).
 ///
-/// Behavioral port of ecom-py/video_compressor.py's check_ffmpeg_installed()
-/// search order: (1) bundled `ffmpeg/bin/` (and `ffmpeg/`, and the exe's own
-/// directory) beside the executable, (2) common Windows install paths,
-/// (3) the system PATH. Results are cached for the process lifetime.
+/// Behavioral port of the discovery logic in
+/// ecom-py/video_compressor.py's check_ffmpeg_installed(): bundled
+/// locations beside the executable are checked first, then common Windows
+/// install paths, then every directory on PATH. Unlike ecom-py this class
+/// verifies discovery by file existence rather than spawning
+/// `ffmpeg -version` - callers get a concrete path or null, never a hung
+/// child process.
 ///
-/// This contract is shared by the watermark step (Phase 2) and the
-/// compression pipeline (Phase 3) - keep it minimal and generic.
+/// NOTE: this file's public contract (`findFfmpeg`/`findFfprobe`) is shared
+/// with the Phase-2 worktree's watermarking work - do not change the two
+/// static method signatures.
 library;
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 
-/// Locates FFmpeg tooling. Both lookups return the full path to the binary,
-/// or null when it cannot be found anywhere.
+/// Static discovery of FFmpeg-family executables: bundled dir beside the
+/// executable, common install paths, then PATH. Results are cached per
+/// executable name for the process lifetime (mirrors ecom-py's
+/// `_ffmpeg_available` cache).
 class FfmpegLocator {
   FfmpegLocator._();
 
-  static String? _cachedFfmpeg;
-  static bool _searchedFfmpeg = false;
+  /// Cached lookups keyed by base executable name ('ffmpeg', 'ffprobe').
+  /// A key being present with a null value means "searched, not found".
+  static final Map<String, String?> _cache = {};
 
-  static String? _cachedFfprobe;
-  static bool _searchedFfprobe = false;
+  /// Test seam: overrides the directory treated as "beside the executable".
+  @visibleForTesting
+  static String? debugBaseDirOverride;
 
-  /// Returns the full path to `ffmpeg`, or null if not found.
-  static Future<String?> findFfmpeg() async {
-    if (!_searchedFfmpeg) {
-      _cachedFfmpeg = await _find('ffmpeg');
-      _searchedFfmpeg = true;
+  /// Test seam: overrides the common-install-path candidates.
+  @visibleForTesting
+  static List<String>? debugCommonPathsOverride;
+
+  /// Test seam: overrides [Platform.environment] (for PATH scanning).
+  @visibleForTesting
+  static Map<String, String>? debugEnvironmentOverride;
+
+  /// Clears the per-process discovery cache (test use).
+  @visibleForTesting
+  static void resetCache() => _cache.clear();
+
+  /// Returns the full path to `ffmpeg` (`ffmpeg.exe` on Windows), or null
+  /// when it cannot be found in the bundled dir, common install paths, or
+  /// PATH.
+  static Future<String?> findFfmpeg() async => _find('ffmpeg');
+
+  /// Returns the full path to `ffprobe` (`ffprobe.exe` on Windows), or null
+  /// when it cannot be found in the bundled dir, common install paths, or
+  /// PATH.
+  static Future<String?> findFfprobe() async => _find('ffprobe');
+
+  static String? _find(String name) {
+    if (_cache.containsKey(name)) {
+      return _cache[name];
     }
-    return _cachedFfmpeg;
+    final found = _search(name);
+    _cache[name] = found;
+    return found;
   }
 
-  /// Returns the full path to `ffprobe`, or null if not found.
-  static Future<String?> findFfprobe() async {
-    if (!_searchedFfprobe) {
-      _cachedFfprobe = await _find('ffprobe');
-      _searchedFfprobe = true;
-    }
-    return _cachedFfprobe;
-  }
+  static String? _search(String name) {
+    final exeName = Platform.isWindows ? '$name.exe' : name;
 
-  /// Clears the cached lookup results (used by tests, and by a future
-  /// Settings "Refresh" action after the user installs FFmpeg).
-  static void resetCache() {
-    _cachedFfmpeg = null;
-    _searchedFfmpeg = false;
-    _cachedFfprobe = null;
-    _searchedFfprobe = false;
-  }
-
-  static Future<String?> _find(String toolName) async {
-    final exeName = Platform.isWindows ? '$toolName.exe' : toolName;
-    final exeDir = p.dirname(Platform.resolvedExecutable);
-
-    final candidates = <String>[
-      // (1) Bundled beside the executable (preferred deployment layout).
-      p.join(exeDir, 'ffmpeg', 'bin', exeName),
-      p.join(exeDir, 'ffmpeg', exeName),
-      p.join(exeDir, exeName),
-      // (2) Common Windows install paths (matches ecom-py's lookup list).
-      if (Platform.isWindows) ...[
-        p.join(r'C:\ffmpeg\bin', exeName),
-        p.join(r'C:\Program Files\ffmpeg\bin', exeName),
-        p.join(r'C:\Program Files (x86)\ffmpeg\bin', exeName),
-        if (Platform.environment['USERPROFILE'] != null)
-          p.join(Platform.environment['USERPROFILE']!, 'ffmpeg', 'bin',
-              exeName),
-      ],
-    ];
-
-    for (final candidate in candidates) {
+    for (final candidate in _candidatePaths(exeName)) {
       if (File(candidate).existsSync()) {
-        return candidate;
+        return p.normalize(candidate);
       }
     }
-
-    // (3) System PATH.
-    try {
-      final result = await Process.run(
-        Platform.isWindows ? 'where' : 'which',
-        [toolName],
-      );
-      if (result.exitCode == 0) {
-        final firstLine = (result.stdout as String)
-            .split(RegExp(r'\r?\n'))
-            .map((line) => line.trim())
-            .firstWhere((line) => line.isNotEmpty, orElse: () => '');
-        if (firstLine.isNotEmpty && File(firstLine).existsSync()) {
-          return firstLine;
-        }
-      }
-    } catch (_) {
-      // `where`/`which` unavailable - treat as not found.
-    }
-
     return null;
+  }
+
+  /// Ordered candidate file paths: (1) bundled beside the executable,
+  /// (2) common install locations, (3) each directory on PATH. Mirrors
+  /// ecom-py/video_compressor.py's `common_paths` ordering.
+  static Iterable<String> _candidatePaths(String exeName) sync* {
+    final baseDir =
+        debugBaseDirOverride ?? p.dirname(Platform.resolvedExecutable);
+
+    // (1) Bundled beside the executable - the install-controlled location
+    // checked first, matching ecom-py's script_dir candidates.
+    yield p.join(baseDir, exeName);
+    yield p.join(baseDir, 'ffmpeg', exeName);
+    yield p.join(baseDir, 'ffmpeg', 'bin', exeName);
+
+    // (2) Common install paths (Windows-only in ecom-py; harmless no-ops
+    // elsewhere since the files simply won't exist).
+    final environment = debugEnvironmentOverride ?? Platform.environment;
+    final commonDirs = debugCommonPathsOverride ??
+        (Platform.isWindows
+            ? [
+                r'C:\ffmpeg\bin',
+                r'C:\Program Files\ffmpeg\bin',
+                r'C:\Program Files (x86)\ffmpeg\bin',
+                if (environment['USERPROFILE'] != null)
+                  p.join(environment['USERPROFILE']!, 'ffmpeg', 'bin'),
+              ]
+            : const <String>[]);
+    for (final dir in commonDirs) {
+      yield p.join(dir, exeName);
+    }
+
+    // (3) PATH scan.
+    final pathValue = environment['PATH'] ?? environment['Path'] ?? '';
+    final separator = Platform.isWindows ? ';' : ':';
+    for (final dir in pathValue.split(separator)) {
+      if (dir.trim().isEmpty) continue;
+      yield p.join(dir.trim(), exeName);
+    }
   }
 }
