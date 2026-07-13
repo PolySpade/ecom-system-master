@@ -90,6 +90,11 @@ class Config {
       (settingsManager.get('video', 'recording_bitrate_kbps', 6000)! as num)
           .toInt();
 
+  /// Whether the timestamp/label/barcode watermark is burned into saved
+  /// videos (REC-06). New key for the port; ecom-py always watermarks.
+  bool get watermarkEnabled =>
+      settingsManager.get('video', 'watermark_enabled', true)! as bool;
+
   // Compression settings (COMP-04/SET-06) - keys/defaults mirror
   // ecom-py/settings_manager.py's 'compression' category exactly.
 

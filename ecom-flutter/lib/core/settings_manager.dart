@@ -37,6 +37,10 @@ class SettingsManager {
       // Foundation encoder. Without it the webcam writes ~15-19 Mbit/s.
       // New key for the port (ecom-py records via OpenCV, no bitrate knob).
       'recording_bitrate_kbps': 6000,
+      // Burn the timestamp/label/barcode watermark into saved videos. New
+      // key for the port (ecom-py always watermarks); off skips the
+      // drawtext part of the post-save pass.
+      'watermark_enabled': true,
     },
     'camera': {
       'index': 0,

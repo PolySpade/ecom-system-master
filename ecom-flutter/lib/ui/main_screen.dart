@@ -294,7 +294,9 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
       final filter = buildRecordingPostFilter(
         barcode: t.barcode,
         label: t.label,
-        startTime: DateTime.tryParse(t.startTime),
+        startTime: widget.config.watermarkEnabled
+            ? DateTime.tryParse(t.startTime)
+            : null,
         targetHeight: widget.config.resolutionHeight,
       );
       _sessionQueuedCompressionIds.add(t.id);
@@ -541,17 +543,25 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   /// Fire-and-forget: queues the single post-save FFmpeg pass that
   /// downscales to the configured resolution (the camera records at its
   /// max resolution regardless of preset), burns the watermark, and
-  /// compresses - all in one encode (never delays the next scan). When no
-  /// usable font exists the pass still runs as scale+compression.
+  /// compresses - all in one encode (never delays the next scan).
+  ///
+  /// Settings semantics: watermark off -> the pass still scales+compresses
+  /// (no drawtext); watermark AND compression both off -> no filter, so
+  /// the compressor skips and the raw recording is kept as-is.
   void _enqueuePostProcess(StopRecordingResult stopResult, int? transactionId) {
     if (transactionId == null) return;
 
-    final filter = buildRecordingPostFilter(
-      barcode: stopResult.barcode,
-      label: stopResult.label,
-      startTime: stopResult.startTime,
-      targetHeight: widget.config.resolutionHeight,
-    );
+    final watermarkOn = widget.config.watermarkEnabled;
+    final compressionOn = widget.config.compressionEnabled;
+    final filter = (watermarkOn || compressionOn)
+        ? buildRecordingPostFilter(
+            barcode: stopResult.barcode,
+            label: stopResult.label,
+            // Null start time drops the drawtext part, keeping scale-only.
+            startTime: watermarkOn ? stopResult.startTime : null,
+            targetHeight: widget.config.resolutionHeight,
+          )
+        : null;
 
     _sessionQueuedCompressionIds.add(transactionId);
     unawaited(
