@@ -14,6 +14,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../core/camera_service.dart';
+import '../core/database.dart';
 import '../core/settings_manager.dart';
 
 /// Resolution presets, matching SettingsDialog.RESOLUTION_PRESETS.
@@ -43,10 +44,16 @@ class SettingsScreen extends StatefulWidget {
     super.key,
     required this.settingsManager,
     required this.cameraService,
+    required this.database,
   });
 
   final SettingsManager settingsManager;
   final CameraService cameraService;
+
+  /// For the Storage tab's Backup/Clear actions. The database file itself
+  /// always lives beside the application (database.db) and is not
+  /// user-relocatable.
+  final AppDatabase database;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -69,7 +76,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // --- Storage tab state ---
   late final TextEditingController _videoPathController;
-  late final TextEditingController _dbPathController;
   late final TextEditingController _logPathController;
 
   // Snapshot of capture-affecting values at open time, for deciding
@@ -97,8 +103,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     _videoPathController =
         TextEditingController(text: sm.get('storage', 'video_path') as String? ?? 'videos');
-    _dbPathController = TextEditingController(
-        text: sm.get('storage', 'database_path') as String? ?? 'database.db');
     _logPathController = TextEditingController(
         text: sm.get('storage', 'log_path') as String? ?? 'logs');
 
@@ -113,7 +117,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _videoPathController.dispose();
-    _dbPathController.dispose();
     _logPathController.dispose();
     super.dispose();
   }
@@ -228,13 +231,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// camera_windows appends the raw device path to the friendly name
+  /// (e.g. "4k Camera <\\?\usb#vid_..&pid_..#..{guid}\global>"); show only
+  /// the human-readable part, matching ecom-py's camera list (SET-02).
+  static String _cameraDisplayName(String rawName) {
+    final cut = rawName.indexOf(' <');
+    return cut > 0 ? rawName.substring(0, cut) : rawName;
+  }
+
   Widget _buildCameraTab() {
     final cameraItems = <DropdownMenuItem<int>>[
       for (var i = 0; i < _cameras.length; i++)
         DropdownMenuItem(
           value: i,
           child: Text(
-            '${_cameras[i].name} (Index $i)',
+            '${_cameraDisplayName(_cameras[i].name)} (Index $i)',
             overflow: TextOverflow.ellipsis,
           ),
         ),
@@ -269,6 +280,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   : DropdownButtonFormField<int>(
                       key: ValueKey(_cameras.length),
                       initialValue: selectedCameraIndex,
+                      isExpanded: true,
                       decoration: const InputDecoration(
                         labelText: 'Select Camera',
                         border: OutlineInputBorder(),
@@ -395,12 +407,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 16),
         _buildPathField(
-          label: 'Database Path',
-          controller: _dbPathController,
-          pickDirectory: false,
-        ),
-        const SizedBox(height: 16),
-        _buildPathField(
           label: 'Log Storage Path',
           controller: _logPathController,
           pickDirectory: true,
@@ -415,8 +421,101 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: Colors.grey.shade600,
           ),
         ),
+        const Divider(height: 32),
+        const Text('Database:', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        Text(
+          'The transaction database is stored beside the application '
+          '(database.db) and cannot be moved.',
+          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            OutlinedButton.icon(
+              onPressed: _backupDatabase,
+              icon: const Icon(Icons.save_alt),
+              label: const Text('Backup Database...'),
+            ),
+            const SizedBox(width: 12),
+            OutlinedButton.icon(
+              onPressed: _clearDatabase,
+              icon: const Icon(Icons.delete_forever),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+              label: const Text('Clear Database...'),
+            ),
+          ],
+        ),
       ],
     );
+  }
+
+  /// Backup Database: checkpoint + copy database.db to a user-chosen
+  /// location (default name stamped with the current date/time).
+  Future<void> _backupDatabase() async {
+    final now = DateTime.now();
+    final stamp = '${now.year.toString().padLeft(4, '0')}'
+        '${now.month.toString().padLeft(2, '0')}'
+        '${now.day.toString().padLeft(2, '0')}_'
+        '${now.hour.toString().padLeft(2, '0')}'
+        '${now.minute.toString().padLeft(2, '0')}'
+        '${now.second.toString().padLeft(2, '0')}';
+    final location = await getSaveLocation(
+      suggestedName: 'database_backup_$stamp.db',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'SQLite database', extensions: ['db']),
+      ],
+    );
+    if (location == null) return;
+
+    try {
+      await widget.database.backupTo(location.path);
+      await _showInfoDialog(
+        'Backup Complete',
+        'Database backed up to:\n${location.path}',
+      );
+    } catch (e) {
+      await _showInfoDialog('Backup Failed', 'Could not back up database: $e');
+    }
+  }
+
+  /// Clear Database: deletes every transaction record after an explicit
+  /// confirmation. Video files on disk are not touched.
+  Future<void> _clearDatabase() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Database'),
+        content: const Text(
+          'This permanently deletes ALL transaction records.\n\n'
+          'Video files on disk are NOT deleted, but they will no longer '
+          'appear in Search or Recent Recordings.\n\n'
+          'Consider making a backup first. Continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Clear Database'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      final removed = await widget.database.clearAllTransactions();
+      await _showInfoDialog(
+        'Database Cleared',
+        '$removed transaction record(s) deleted.',
+      );
+    } catch (e) {
+      await _showInfoDialog('Error', 'Could not clear database: $e');
+    }
   }
 
   Widget _buildPathField({
@@ -518,9 +617,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'gain': _gain.round(),
       'brightness': _brightness.round(),
     });
+    // database_path is deliberately not written: the database is fixed
+    // beside the application (the settings.json key survives for ecom-py
+    // compatibility but is not user-editable in this app).
     sm.updateCategory('storage', {
       'video_path': _videoPathController.text.trim(),
-      'database_path': _dbPathController.text.trim(),
       'log_path': _logPathController.text.trim(),
     });
     // 'app' and 'compression' categories are intentionally untouched here:

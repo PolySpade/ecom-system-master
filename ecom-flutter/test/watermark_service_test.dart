@@ -24,7 +24,14 @@ void main() {
   group('escapeDrawtextText', () {
     test('leaves benign text unchanged', () {
       expect(escapeDrawtextText('Normal (Standard)'), 'Normal (Standard)');
-      expect(escapeDrawtextText('Barcode: ABC123'), 'Barcode: ABC123');
+      expect(escapeDrawtextText('ABC123'), 'ABC123');
+    });
+
+    test('escapes colons and commas (filtergraph separators - the bundled '
+        '2026 FFmpeg applies backslash escapes inside single quotes, so a '
+        'bare : or , breaks the chain even when quoted)', () {
+      expect(escapeDrawtextText('Barcode: ABC123'), r'Barcode\: ABC123');
+      expect(escapeDrawtextText('a,b'), r'a\,b');
     });
 
     test('escapes single quotes and backslashes', () {
@@ -55,7 +62,7 @@ void main() {
       expect(filter, contains('boxcolor=0x667eea'));
       expect(filter, contains('x=w-tw-10:y=10'));
       // Barcode bottom-left.
-      expect(filter, contains("text='Barcode: ABC123'"));
+      expect(filter, contains(r"text='Barcode\: ABC123'"));
       expect(filter, contains('x=10:y=h-th-10'));
     });
 

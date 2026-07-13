@@ -108,6 +108,15 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   String _selectedLabel = 'Normal (Standard)';
   List<Transaction> _recentTransactions = [];
 
+  /// Completed recordings still awaiting compression that have NOT been
+  /// queued this session (the operator-triggered backlog tracker).
+  int _pendingCompressionCount = 0;
+
+  /// Transaction ids already handed to the compressor this session, by
+  /// either the post-save chain or the backlog button - prevents
+  /// double-queuing the same file.
+  final Set<int> _sessionQueuedCompressionIds = {};
+
   String _statusBarText = 'Ready';
   Timer? _statusBarTimer;
   Timer? _ticker;
@@ -252,8 +261,53 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
 
   Future<void> _refreshRecentTransactions() async {
     final recent = await widget.database.getRecentTransactions(limit: 10);
+    final pending = await widget.database.getPendingCompressions();
     if (!mounted) return;
-    setState(() => _recentTransactions = recent);
+    setState(() {
+      _recentTransactions = recent;
+      _pendingCompressionCount = pending
+          .where((t) => !_sessionQueuedCompressionIds.contains(t.id))
+          .length;
+    });
+  }
+
+  /// Backlog compression (operator-triggered): queues every completed
+  /// recording still marked compression_status='pending' (e.g. recorded
+  /// while FFmpeg was missing or compression was disabled). Rows already
+  /// queued this session are skipped so the normal post-save chain and
+  /// this button can never double-queue a file.
+  Future<void> _compressPendingRecordings() async {
+    final pending = await widget.database.getPendingCompressions();
+    var queued = 0;
+    var missing = 0;
+    for (final t in pending) {
+      if (_sessionQueuedCompressionIds.contains(t.id)) continue;
+      final path = resolveVideoPath(
+        widget.videoStoragePath,
+        startTime: t.startTime,
+        label: t.label,
+        videoFilename: t.videoFilename,
+      );
+      if (path == null) {
+        missing++;
+        continue;
+      }
+      _sessionQueuedCompressionIds.add(t.id);
+      await widget.compressor.queueCompression(
+        path,
+        t.id,
+        CompressionSettings.fromConfig(widget.config),
+      );
+      queued++;
+    }
+    if (!mounted) return;
+    _setStatusBar(
+      missing > 0
+          ? 'Queued $queued recording(s) for compression '
+              '($missing file(s) not found on disk)'
+          : 'Queued $queued recording(s) for compression',
+    );
+    await _refreshRecentTransactions();
   }
 
   Future<void> _refreshStorageUsed() async {
@@ -496,6 +550,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
           .then((_) async {
         if (mounted) await _refreshRecentTransactions();
         if (transactionId != null) {
+          _sessionQueuedCompressionIds.add(transactionId);
           await widget.compressor.queueCompression(
             stopResult.videoPath,
             transactionId,
@@ -642,6 +697,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     _openChildScreen(SettingsScreen(
       settingsManager: widget.config.settingsManager,
       cameraService: widget.cameraService,
+      database: widget.database,
     ));
   }
 
@@ -851,6 +907,27 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
             _buildStatusRow('Watermark:', watermarkText),
             const SizedBox(height: 4),
             CompressionStatusIndicator(compressor: widget.compressor),
+            // Backlog tracker: older recordings whose compression never ran
+            // (FFmpeg missing at the time, compression disabled, ...).
+            if (_pendingCompressionCount > 0) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$_pendingCompressionCount recording(s) not compressed',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.orange.shade800,
+                          ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _compressPendingRecordings,
+                    child: const Text('Compress All'),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),

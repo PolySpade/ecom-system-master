@@ -6,6 +6,8 @@
 /// instead of ecom-py's per-call sqlite3.connect()/close() pattern.
 library;
 
+import 'dart:io';
+
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show Database;
 
@@ -347,6 +349,23 @@ class AppDatabase {
         offset: offset,
       );
     }
+  }
+
+  /// Deletes every transaction row (Settings > Clear Database). Returns the
+  /// number of rows removed. Does not touch video files on disk.
+  Future<int> clearAllTransactions() async {
+    final removed = await _db.delete('transactions');
+    _logger.info('Cleared database: $removed transaction rows deleted');
+    return removed;
+  }
+
+  /// Copies the database file to [destPath] (Settings > Backup Database).
+  /// Forces a WAL checkpoint first so the snapshot contains every committed
+  /// transaction (the -wal sidecar is folded into the main file).
+  Future<void> backupTo(String destPath) async {
+    await _db.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+    await File(_db.path).copy(destPath);
+    _logger.info('Database backed up to $destPath');
   }
 
   /// Closes the underlying database connection.

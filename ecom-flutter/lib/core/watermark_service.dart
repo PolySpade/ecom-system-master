@@ -67,12 +67,18 @@ String? findWindowsFontFile({String fontsDir = r'C:\Windows\Fonts'}) {
 }
 
 /// Escapes [text] for use inside a single-quoted drawtext `text='...'`
-/// value: backslashes are doubled and embedded single quotes close/reopen
-/// the quoted section (ffmpeg filter quoting rules).
+/// value: backslashes are doubled, embedded single quotes close/reopen the
+/// quoted section, and `:`/`,` are backslash-escaped. The bundled FFmpeg
+/// (2026 git master) applies backslash escaping INSIDE single quotes at the
+/// filtergraph level and treats a bare `:` there as an option separator -
+/// verified empirically against ffmpeg-2026-07-09; quoting alone is NOT
+/// sufficient on this build.
 String escapeDrawtextText(String text) {
   return text
       .replaceAll('\\', '\\\\')
       .replaceAll("'", r"'\''")
+      .replaceAll(':', r'\:')
+      .replaceAll(',', r'\,')
       .replaceAll('\n', ' ')
       .replaceAll('\r', ' ');
 }
