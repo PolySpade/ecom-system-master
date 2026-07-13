@@ -15,6 +15,7 @@ import 'core/camera_service.dart';
 import 'core/config.dart';
 import 'core/database.dart';
 import 'core/logger.dart';
+import 'core/watermark_service.dart';
 import 'ui/main_screen.dart';
 
 /// Minimum window size (CAM-02) - the app refuses to shrink below this.
@@ -46,6 +47,9 @@ Future<void> main() async {
   );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     await windowManager.setMinimumSize(_kMinimumWindowSize);
+    // REC-07/UI-02: intercept window close so MainScreen can confirm and
+    // stop-and-save an in-progress recording before exiting.
+    await windowManager.setPreventClose(true);
     await windowManager.show();
     await windowManager.focus();
   });
@@ -63,9 +67,12 @@ Future<void> main() async {
   } catch (e) {
     logger.error('Error initializing camera: $e');
   }
+  // CAM-04: detect camera failure/disconnect and auto-reinit (cooldown'd).
+  cameraService.startHealthMonitor();
 
   final barcodeHandler = BarcodeHandler();
   final barcodeListener = GlobalBarcodeListener();
+  final watermarkService = WatermarkService(logger);
 
   runApp(
     EcomVideoTrackerApp(
@@ -73,6 +80,9 @@ Future<void> main() async {
       database: database,
       barcodeHandler: barcodeHandler,
       barcodeListener: barcodeListener,
+      watermarkService: watermarkService,
+      videoStoragePath: config.videoStoragePath,
+      minFreeSpaceGb: config.minFreeSpaceGb,
     ),
   );
 }
@@ -84,12 +94,18 @@ class EcomVideoTrackerApp extends StatefulWidget {
     required this.database,
     required this.barcodeHandler,
     required this.barcodeListener,
+    required this.watermarkService,
+    required this.videoStoragePath,
+    required this.minFreeSpaceGb,
   });
 
   final CameraService cameraService;
   final AppDatabase database;
   final BarcodeHandler barcodeHandler;
   final GlobalBarcodeListener barcodeListener;
+  final WatermarkService watermarkService;
+  final String videoStoragePath;
+  final double minFreeSpaceGb;
 
   @override
   State<EcomVideoTrackerApp> createState() => _EcomVideoTrackerAppState();
@@ -134,12 +150,19 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
   Widget build(BuildContext context) {
     final app = MaterialApp(
       title: 'Ecom Video Tracker',
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple)),
+      // UI-04: modern Material theme seeded from ecom-py's purple identity
+      // (#667eea).
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF667EEA)),
+      ),
       home: MainScreen(
         cameraService: widget.cameraService,
         database: widget.database,
         barcodeHandler: widget.barcodeHandler,
         barcodeListener: widget.barcodeListener,
+        watermarkService: widget.watermarkService,
+        videoStoragePath: widget.videoStoragePath,
+        minFreeSpaceGb: widget.minFreeSpaceGb,
         rootFocusNode: useHardwareKeyboardBarcodeListener ? null : _rootFocusNode,
       ),
     );

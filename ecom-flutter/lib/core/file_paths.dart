@@ -59,3 +59,38 @@ String buildVideoPath(String basePath, String barcode, String labelFolder) {
   final filename = '${timestamp}_$safeBarcode.mp4';
   return p.join(folder, filename);
 }
+
+/// Resolves a stored transaction row back to a playable file path (STO-03),
+/// mirroring ecom-py/app_gui.py's resolution: try the labeled layout
+/// `<base>/<yyyy-MM-dd from startTime>/<labelFolder>/<filename>` first,
+/// then fall back to the pre-label-folder legacy layout
+/// `<base>/<yyyy-MM-dd>/<filename>`. Absolute [videoFilename] values
+/// (written by the Phase-1 spike, which stored full paths) pass through.
+/// Returns null when no candidate exists on disk.
+String? resolveVideoPath(
+  String basePath, {
+  required String startTime,
+  required String label,
+  required String videoFilename,
+}) {
+  if (p.isAbsolute(videoFilename)) {
+    return File(videoFilename).existsSync() ? videoFilename : null;
+  }
+
+  final DateTime parsed;
+  try {
+    parsed = DateTime.parse(startTime);
+  } catch (_) {
+    return null;
+  }
+  final dateFolder = DateFormat('yyyy-MM-dd').format(parsed);
+
+  final labeled =
+      p.join(basePath, dateFolder, labelFolderName(label), videoFilename);
+  if (File(labeled).existsSync()) return labeled;
+
+  final legacy = p.join(basePath, dateFolder, videoFilename);
+  if (File(legacy).existsSync()) return legacy;
+
+  return null;
+}
