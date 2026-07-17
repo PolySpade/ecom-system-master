@@ -879,8 +879,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
       } else {
         await _showInfoDialog(
           'Settings Saved',
-          'Settings saved but camera restart failed.\n\n'
-          'Error: $error\n\nPlease restart the application.',
+          'Settings saved but the camera did not restart yet.\n\n'
+          'Error: $error\n\n'
+          'The app keeps retrying in the background with the new settings; '
+          'the preview should return within a few seconds. If it does not, '
+          'check the camera connection or restart the application.',
         );
       }
     } else {

@@ -131,6 +131,9 @@ class CameraService {
   /// Whether a recording is currently in progress.
   bool get isRecording => _controller?.value.isRecordingVideo ?? false;
 
+  /// Whether the periodic health monitor is currently running (CAM-04).
+  bool get healthMonitorRunning => _healthTimer != null;
+
   /// Whether the camera is initialized and error-free.
   bool get isCameraHealthy =>
       _controller != null &&
@@ -182,7 +185,21 @@ class CameraService {
       fps: fps,
       videoBitrate: videoBitrate,
     );
-    await controller.initialize();
+    try {
+      await controller.initialize();
+    } catch (_) {
+      // camera_windows keeps the native camera registered even when
+      // initialize() fails partway (create succeeded, start failed).
+      // Dispose the failed controller to free the device id - otherwise
+      // every later attempt fails with "Camera with given device id
+      // already exists" until the app is restarted.
+      try {
+        await controller.dispose();
+      } catch (e) {
+        _logger.warning('Disposing failed camera controller: $e');
+      }
+      rethrow;
+    }
     _controller = controller;
     _consecutiveFailures = 0;
     // A settings-driven reinitialize() goes through dispose(); clear the
@@ -280,10 +297,25 @@ class CameraService {
     }
   }
 
+  /// Attempts per settings-driven [reinitialize]. Media Foundation can
+  /// report the device busy ("Hardware MFT failed to start streaming...")
+  /// for a few seconds after the old controller is released; retrying
+  /// bridges that window so Save & Apply usually succeeds immediately.
+  static const int reinitAttempts = 3;
+
+  /// Delay between [reinitialize] attempts.
+  static const Duration reinitRetryDelay = Duration(seconds: 1);
+
   /// Releases the current controller and re-runs [init] - the async camera
   /// restart used after capture-affecting settings change (SET-08),
   /// mirroring ecom-py CameraHandler.reinitialize(). Throws a [StateError]
   /// if called while recording.
+  ///
+  /// Init is retried up to [reinitAttempts] times (device-busy bridge), and
+  /// the health monitor is restarted even when every attempt fails - [init]
+  /// stores the new settings before it can throw, so the monitor's periodic
+  /// retry brings the camera back with the NEW configuration as soon as the
+  /// device frees up (no app restart required).
   Future<void> reinitialize(
     int cameraIndex, {
     ResolutionPreset resolutionPreset = ResolutionPreset.high,
@@ -295,17 +327,35 @@ class CameraService {
     }
     _logger.info('Reinitializing camera (index $cameraIndex)');
     final monitorWasRunning = _healthTimer != null;
-    await dispose();
-    await init(
-      cameraIndex,
-      resolutionPreset: resolutionPreset,
-      fps: fps,
-      videoBitrate: videoBitrate,
-    );
-    if (monitorWasRunning) {
-      startHealthMonitor();
+    try {
+      await dispose();
+      // Not disposed-for-good: the health monitor must keep watching this
+      // service (dispose() set the flag that suspends it).
+      _disposed = false;
+      for (var attempt = 1; ; attempt++) {
+        try {
+          await init(
+            cameraIndex,
+            resolutionPreset: resolutionPreset,
+            fps: fps,
+            videoBitrate: videoBitrate,
+          );
+          break;
+        } catch (e) {
+          if (attempt >= reinitAttempts) rethrow;
+          _logger.warning(
+            'Camera reinit attempt $attempt/$reinitAttempts failed ($e), '
+            'retrying...',
+          );
+          await Future<void>.delayed(reinitRetryDelay);
+        }
+      }
+      _logger.info('Camera reinitialized');
+    } finally {
+      if (monitorWasRunning) {
+        startHealthMonitor();
+      }
     }
-    _logger.info('Camera reinitialized');
   }
 
   /// Returns the live camera preview widget. [init] must have completed.
