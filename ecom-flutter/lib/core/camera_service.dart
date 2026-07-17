@@ -19,6 +19,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
+import 'camera_controls.dart';
 import 'file_paths.dart';
 import 'logger.dart';
 
@@ -93,6 +94,15 @@ class CameraService {
   ResolutionPreset _resolutionPreset = ResolutionPreset.high;
   int? _fps;
   int? _videoBitrate;
+
+  /// Exposure/gain/brightness to (re)apply to the device (SET-04). Kept
+  /// across reinits so a settings-driven restart or a CAM-04 auto-recovery
+  /// restores the operator's picture controls.
+  CameraControlValues? _controlValues;
+
+  /// Raw plugin name of the initialized camera (embeds the device path
+  /// used to find the same device through DirectShow).
+  String? _currentCameraName;
   int _consecutiveFailures = 0;
   DateTime? _lastReinitTime;
   bool _reinitInProgress = false;
@@ -201,11 +211,39 @@ class CameraService {
       rethrow;
     }
     _controller = controller;
+    _currentCameraName = description.name;
     _consecutiveFailures = 0;
     // A settings-driven reinitialize() goes through dispose(); clear the
     // flag so the health monitor resumes watching the new controller.
     _disposed = false;
+    _applyStoredControls();
     onCameraStateChanged?.call();
+  }
+
+  /// Stores [values] and pushes them to the camera driver right away when
+  /// one is initialized (DirectShow property sets - the change shows up on
+  /// the live preview immediately, no restart needed). Re-applied
+  /// automatically after every reinit, including CAM-04 auto-recovery.
+  /// Returns the per-property report, or null when no camera is available.
+  String? applyControls(CameraControlValues values) {
+    _controlValues = values;
+    return _applyStoredControls();
+  }
+
+  String? _applyStoredControls() {
+    final values = _controlValues;
+    final cameraName = _currentCameraName;
+    if (values == null || cameraName == null || _controller == null) {
+      return null;
+    }
+    try {
+      final report = applyCameraControls(cameraName, values);
+      _logger.info('Camera controls applied: $report');
+      return report;
+    } catch (e) {
+      _logger.warning('Could not apply camera controls ($values): $e');
+      return null;
+    }
   }
 
   /// Starts the periodic camera health monitor (CAM-04). Safe to call more

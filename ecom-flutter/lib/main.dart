@@ -11,6 +11,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/barcode_handler.dart';
 import 'core/barcode_listener.dart';
+import 'core/camera_controls.dart';
 import 'core/camera_service.dart';
 import 'core/config.dart';
 import 'core/database.dart';
@@ -71,6 +72,13 @@ Future<void> main() async {
   );
 
   final cameraService = CameraService(config.videoStoragePath, logger);
+  // Stored picture controls are pushed to the driver after every (re)init.
+  cameraService.applyControls(CameraControlValues(
+    autoExposure: config.cameraAutoExposure,
+    exposure: config.cameraExposure,
+    gain: config.cameraGain,
+    brightness: config.cameraBrightness,
+  ));
   try {
     await cameraService.init(
       config.cameraIndex,

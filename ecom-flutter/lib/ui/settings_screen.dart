@@ -13,6 +13,7 @@ import 'package:camera/camera.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
+import '../core/camera_controls.dart';
 import '../core/camera_service.dart';
 import '../core/database.dart';
 import '../core/ffmpeg_locator.dart';
@@ -228,11 +229,94 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // --- Tabs ---
 
+  /// One-press performance presets (Video tab). They only fill the form
+  /// fields - Save & Apply still confirms and applies, so a mis-press is
+  /// reversible with Cancel.
+  void _applyQuickPreset({
+    required String name,
+    required String resolutionPreset,
+    required int fps,
+    required int bitrateKbps,
+    required String compressionPreset,
+  }) {
+    setState(() {
+      _resolutionPreset = resolutionPreset;
+      _fps = fps;
+      _bitrateKbps = bitrateKbps;
+      _compressionPreset = compressionPreset;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text("$name preset loaded - press Save & Apply to use it"),
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
+  Widget _buildQuickPresets() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Quick presets:',
+            style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.speed),
+              label: const Text('Low-end PC'),
+              onPressed: () => _applyQuickPreset(
+                name: 'Low-end PC',
+                resolutionPreset: '1280x720 (HD)',
+                fps: 30,
+                bitrateKbps: 4000,
+                compressionPreset: 'ultrafast',
+              ),
+            ),
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.balance),
+              label: const Text('Balanced'),
+              onPressed: () => _applyQuickPreset(
+                name: 'Balanced',
+                resolutionPreset: '1280x720 (HD)',
+                fps: 30,
+                bitrateKbps: 6000,
+                compressionPreset: 'medium',
+              ),
+            ),
+            FilledButton.tonalIcon(
+              icon: const Icon(Icons.high_quality),
+              label: const Text('High quality'),
+              onPressed: () => _applyQuickPreset(
+                name: 'High quality',
+                resolutionPreset: '1920x1080 (Full HD)',
+                fps: 30,
+                bitrateKbps: 8000,
+                compressionPreset: 'medium',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Low-end PC: 720p, 30 FPS, 4 Mbit/s, fastest encoding - use this '
+          'if the preview or recordings lag on weaker machines.',
+          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+        ),
+        const Divider(height: 24),
+      ],
+    );
+  }
+
   Widget _buildVideoTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        _buildQuickPresets(),
         DropdownButtonFormField<String>(
+          // Keyed by value so quick presets refresh the displayed selection
+          // (a FormField ignores a changed initialValue on rebuild).
+          key: ValueKey('resolution-$_resolutionPreset'),
           initialValue: _resolutionPreset,
           decoration: const InputDecoration(
             labelText: 'Resolution',
@@ -253,6 +337,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 16),
         DropdownButtonFormField<int>(
+          key: ValueKey('bitrate-$_bitrateKbps'),
           initialValue: _bitrateKbps,
           isExpanded: true,
           decoration: const InputDecoration(
@@ -390,21 +475,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: Colors.amber.shade100,
+            color: Colors.blue.shade50,
             borderRadius: BorderRadius.circular(4),
-            border: Border.all(color: Colors.amber.shade400),
+            border: Border.all(color: Colors.blue.shade200),
           ),
           child: Row(
             children: [
-              Icon(Icons.warning_amber, size: 18, color: Colors.amber.shade900),
+              Icon(Icons.info_outline, size: 18, color: Colors.blue.shade800),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Manual exposure, gain, and brightness are NOT supported '
-                  'by the current Windows camera backend (camera_windows). '
-                  'Values are saved to settings.json but cannot be applied '
-                  'to the camera yet.',
-                  style: TextStyle(fontSize: 11, color: Colors.amber.shade900),
+                  'Exposure, gain, and brightness are applied directly to '
+                  'the camera driver on Save & Apply - the live preview '
+                  'updates immediately. Cameras that lack a control keep '
+                  'their default for it.',
+                  style: TextStyle(fontSize: 11, color: Colors.blue.shade800),
                 ),
               ),
             ],
@@ -413,8 +498,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Auto Exposure'),
-          subtitle: const Text('Turn off for manual control (unsupported on '
-              'this backend - persisted only)'),
+          subtitle: const Text('Turn off for manual control'),
           value: _autoExposure,
           onChanged: (value) => setState(() => _autoExposure = value),
         ),
@@ -732,6 +816,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 8),
         DropdownButtonFormField<String>(
+          key: ValueKey('comp-preset-$_compressionPreset'),
           initialValue: _compressionPreset,
           decoration: const InputDecoration(
             labelText: 'Encoding Speed Preset',
@@ -861,6 +946,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _showInfoDialog('Error', 'Failed to save settings');
       return;
     }
+
+    // Picture controls go straight to the camera driver (DirectShow) - the
+    // live preview reflects them immediately, no camera restart needed.
+    // CameraService keeps them and re-applies after any reinit below.
+    widget.cameraService.applyControls(CameraControlValues(
+      autoExposure: _autoExposure,
+      exposure: _exposure.round(),
+      gain: _gain.round(),
+      brightness: _brightness.round(),
+    ));
 
     final captureAffecting = _cameraIndex != _originalCameraIndex ||
         _resolutionPreset != _originalResolutionPreset ||

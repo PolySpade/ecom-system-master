@@ -62,6 +62,17 @@ class Config {
 
   int get cameraIndex => settingsManager.getCameraIndex();
 
+  // Camera picture controls (SET-04), applied via DirectShow at startup and
+  // on Save & Apply (see camera_controls.dart).
+
+  bool get cameraAutoExposure => settingsManager.getCameraAutoExposure();
+
+  int get cameraExposure => settingsManager.getCameraExposure();
+
+  int get cameraGain => settingsManager.getCameraGain();
+
+  int get cameraBrightness => settingsManager.getCameraBrightness();
+
   String get videoStoragePath =>
       _resolvePath(settingsManager.getVideoStoragePath());
 
