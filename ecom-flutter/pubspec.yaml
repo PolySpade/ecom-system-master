@@ -48,6 +48,14 @@ dependencies:
   # First-party package published by flutter.dev.
   file_selector: ^1.0.3
 
+dependency_overrides:
+  # Vendored copy with one patch: the record stream's media type is capped
+  # at the resolution preset's height (upstream always records at the
+  # camera's max resolution, e.g. 4K, which lags low-end machines). See
+  # packages/camera_windows/windows/capture_controller.cpp ("ECOM PATCH").
+  camera_windows:
+    path: packages/camera_windows
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
