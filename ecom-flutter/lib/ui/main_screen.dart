@@ -146,8 +146,6 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
       _setStatusBar('Camera scan: $barcode');
       _handleScannedBarcode(barcode);
     };
-    widget.cameraScanner.onTimeout =
-        () => _setStatusBar('Camera scan: no barcode found');
     HardwareKeyboard.instance.addHandler(_handleScanHotkey);
 
     // Camera reinit + salvage hooks (CAM-04).
@@ -172,9 +170,12 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   /// F2 arms the camera scan (button-armed mode). Registered as a
   /// top-level HardwareKeyboard handler alongside the wedge listener.
   bool _handleScanHotkey(KeyEvent event) {
-    if (event is KeyDownEvent &&
-        event.logicalKey == LogicalKeyboardKey.f2) {
-      _armCameraScan();
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f2) {
+      if (widget.cameraScanner.state.value.armed) {
+        _disarmCameraScan();
+      } else {
+        _armCameraScan();
+      }
       return true;
     }
     return false;
@@ -189,11 +190,15 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     _setStatusBar('Camera scan armed - point the barcode at the camera');
   }
 
+  void _disarmCameraScan() {
+    widget.cameraScanner.disarm();
+    _setStatusBar('Camera scan cancelled');
+  }
+
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleScanHotkey);
     widget.cameraScanner.onBarcode = null;
-    widget.cameraScanner.onTimeout = null;
     windowManager.removeListener(this);
     _ticker?.cancel();
     _statusBarTimer?.cancel();
@@ -243,8 +248,9 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
       // Serialize with any in-flight scan so the stop can't interleave.
       await _scanQueue.submitAction(() async {
         if (!widget.cameraService.isRecording) return;
-        final stopResult =
-            await widget.cameraService.stopRecording(stopMethod: 'manual');
+        final stopResult = await widget.cameraService.stopRecording(
+          stopMethod: 'manual',
+        );
         if (_currentTransactionId != null) {
           await widget.database.completeTransaction(
             _currentTransactionId!,
@@ -289,9 +295,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     }
     _enqueuePostProcess(result, transactionId);
     if (!mounted) return;
-    _setStatusBar(
-      'Camera failure - recording saved (${result.duration}s)',
-    );
+    _setStatusBar('Camera failure - recording saved (${result.duration}s)');
     await _refreshRecentTransactions();
   }
 
@@ -355,7 +359,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     _setStatusBar(
       missing > 0
           ? 'Queued $queued recording(s) for compression '
-              '($missing file(s) not found on disk)'
+                '($missing file(s) not found on disk)'
           : 'Queued $queued recording(s) for compression',
     );
     await _refreshRecentTransactions();
@@ -447,14 +451,13 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   /// configured floor; warns (status bar) when merely low.
   Future<bool> _checkDiskSpaceForStart() async {
     final freeGb = getFreeSpaceGb(widget.videoStoragePath);
-    final status =
-        evaluateDiskSpace(freeGb, minFreeGb: widget.minFreeSpaceGb);
+    final status = evaluateDiskSpace(freeGb, minFreeGb: widget.minFreeSpaceGb);
     if (status == DiskSpaceStatus.critical) {
       await _showErrorDialog(
         'Low Disk Space',
         'Cannot start recording: only ${freeGb!.toStringAsFixed(2)} GB free '
-        '(minimum ${widget.minFreeSpaceGb.toStringAsFixed(1)} GB). '
-        'Free up disk space and try again.',
+            '(minimum ${widget.minFreeSpaceGb.toStringAsFixed(1)} GB). '
+            'Free up disk space and try again.',
       );
       return false;
     }
@@ -522,9 +525,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
           p.basename(videoPath),
           label: selectedLabel,
         );
-        _setStatusBar(
-          'Recording started: ${result.barcode} ($selectedLabel)',
-        );
+        _setStatusBar('Recording started: ${result.barcode} ($selectedLabel)');
       } else if (result.action == BarcodeAction.stopAndStart) {
         // Stop MUST complete before the new start begins (sequential,
         // matching ecom-py's process_barcode orchestration).
@@ -616,8 +617,8 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
             videoFilter: filter,
           )
           .then((_) async {
-        if (mounted) await _refreshRecentTransactions();
-      }),
+            if (mounted) await _refreshRecentTransactions();
+          }),
     );
   }
 
@@ -737,27 +738,31 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   /// return (the camera may have been reinitialized by Settings).
   Future<void> _openChildScreen(Widget screen) async {
     widget.barcodeListener.onBarcodeScanned = (_) {};
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (context) => screen),
-    );
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (context) => screen));
     widget.barcodeListener.onBarcodeScanned = _handleScannedBarcode;
     _reclaimRootFocus();
     if (mounted) setState(() {});
   }
 
   void _openSearch() {
-    _openChildScreen(SearchScreen(
-      database: widget.database,
-      videoStoragePath: widget.config.videoStoragePath,
-    ));
+    _openChildScreen(
+      SearchScreen(
+        database: widget.database,
+        videoStoragePath: widget.config.videoStoragePath,
+      ),
+    );
   }
 
   void _openSettings() {
-    _openChildScreen(SettingsScreen(
-      settingsManager: widget.config.settingsManager,
-      cameraService: widget.cameraService,
-      database: widget.database,
-    ));
+    _openChildScreen(
+      SettingsScreen(
+        settingsManager: widget.config.settingsManager,
+        cameraService: widget.cameraService,
+        database: widget.database,
+      ),
+    );
   }
 
   /// Preview area (CAM-01/CAM-02): scales continuously with window resizes
@@ -811,25 +816,22 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Video Label:',
-              style: Theme.of(context).textTheme.labelLarge,
-            ),
+            Text('Video Label:', style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: 4),
             DropdownButtonFormField<String>(
               initialValue: _selectedLabel,
               isDense: true,
               decoration: const InputDecoration(
                 border: OutlineInputBorder(),
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
               ),
               items: _kLabelOptions
                   .map(
-                    (label) => DropdownMenuItem(
-                      value: label,
-                      child: Text(label),
-                    ),
+                    (label) =>
+                        DropdownMenuItem(value: label, child: Text(label)),
                   )
                   .toList(),
               onChanged: (value) {
@@ -889,12 +891,20 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
               builder: (context, scan, _) {
                 return FilledButton.tonalIcon(
                   icon: Icon(
-                    scan.armed ? Icons.qr_code_scanner : Icons.photo_camera,
+                    scan.armed ? Icons.stop_circle : Icons.photo_camera,
                   ),
-                  onPressed: scan.armed ? null : _armCameraScan,
+                  // Toggle between stop and start
+                  onPressed: scan.armed ? _disarmCameraScan : _armCameraScan,
+                  // Make it look like a cancel button when active
+                  style: scan.armed
+                      ? FilledButton.styleFrom(
+                          backgroundColor: _kDangerColor.withOpacity(0.1),
+                          foregroundColor: _kDangerColor,
+                        )
+                      : null,
                   label: Text(
                     scan.armed
-                        ? 'Scanning... (${scan.secondsLeft}s)'
+                        ? 'Scanning... (Cancel)'
                         : 'Scan with Camera (F2)',
                   ),
                 );
@@ -986,8 +996,8 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
                     child: Text(
                       '$_pendingCompressionCount recording(s) not compressed',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.orange.shade800,
-                          ),
+                        color: Colors.orange.shade800,
+                      ),
                     ),
                   ),
                   TextButton(
@@ -1006,10 +1016,12 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   String _formatStartTime(String startTimeIso) {
     try {
       final parsed = DateTime.parse(startTimeIso);
-      final date = '${parsed.year.toString().padLeft(4, '0')}-'
+      final date =
+          '${parsed.year.toString().padLeft(4, '0')}-'
           '${parsed.month.toString().padLeft(2, '0')}-'
           '${parsed.day.toString().padLeft(2, '0')}';
-      final time = '${parsed.hour.toString().padLeft(2, '0')}:'
+      final time =
+          '${parsed.hour.toString().padLeft(2, '0')}:'
           '${parsed.minute.toString().padLeft(2, '0')}:'
           '${parsed.second.toString().padLeft(2, '0')}';
       return '$date $time';
@@ -1060,13 +1072,12 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
                         final size = t.fileSizeMb ?? 0;
                         return ListTile(
                           dense: true,
-                          contentPadding:
-                              const EdgeInsets.symmetric(horizontal: 4),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                          ),
                           title: Text(
                             t.barcode,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                            ),
+                            style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
                           subtitle: Text(
                             '${t.label}\n'
@@ -1117,10 +1128,7 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              _statusBarText,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: Text(_statusBarText, overflow: TextOverflow.ellipsis),
           ),
         ],
       ),

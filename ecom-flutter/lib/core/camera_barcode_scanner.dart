@@ -1,9 +1,9 @@
-/// Camera Barcode Scanner - button-armed scan loop over the frame tap.
+/// Camera Barcode Scanner - button-armed continuous scan loop over the frame tap.
 ///
-/// arm() opens a bounded scan window and polls grab -> decode until the
-/// first barcode hit or the window expires. The decoded value feeds the
-/// SAME processBarcode path the USB wedge uses (full parity) - this class
-/// does no start/stop/DB orchestration of its own, mirroring how
+/// arm() opens a continuous scan loop and polls grab -> decode until a
+/// barcode hit occurs, or the scanner is disarmed/disposed. The decoded value
+/// feeds the SAME processBarcode path the USB wedge uses (full parity) - this
+/// class does no start/stop/DB orchestration of its own, mirroring how
 /// GlobalBarcodeListener is a pure input source.
 ///
 /// Injectable grabber/decoder seams follow the VideoCompressor pattern so
@@ -23,23 +23,20 @@ typedef FrameGrabber = Future<GrabbedFrame?> Function();
 /// Decodes a frame to a barcode string (null = no barcode in frame).
 typedef FrameDecoder = Future<String?> Function(GrabbedFrame frame);
 
-/// Published scan state for the UI (button highlight + countdown).
+/// Published scan state for the UI.
 class CameraScanState {
-  const CameraScanState({required this.armed, this.secondsLeft = 0});
+  const CameraScanState({required this.armed});
 
   static const idle = CameraScanState(armed: false);
 
   final bool armed;
-  final int secondsLeft;
 
   @override
   bool operator ==(Object other) =>
-      other is CameraScanState &&
-      other.armed == armed &&
-      other.secondsLeft == secondsLeft;
+      other is CameraScanState && other.armed == armed;
 
   @override
-  int get hashCode => Object.hash(armed, secondsLeft);
+  int get hashCode => armed.hashCode;
 }
 
 /// Button-armed camera barcode scanner.
@@ -48,104 +45,76 @@ class CameraBarcodeScanner {
     this._logger, {
     required FrameGrabber grabber,
     required FrameDecoder decoder,
-    this.scanWindow = const Duration(seconds: 6),
     this.pollInterval = const Duration(milliseconds: 250),
-  })  : _grabber = grabber,
-        _decoder = decoder;
+  }) : _grabber = grabber,
+       _decoder = decoder;
 
   final Logger _logger;
   final FrameGrabber _grabber;
   final FrameDecoder _decoder;
 
-  /// How long a single arm() keeps scanning before giving up.
-  final Duration scanWindow;
-
   /// Delay between grab/decode attempts.
   final Duration pollInterval;
 
-  /// Fired with the decoded barcode (exactly once per arm window).
+  /// Fired with the decoded barcode (exactly once per arm).
   void Function(String barcode)? onBarcode;
 
-  /// Fired when the scan window expires without a hit.
-  void Function()? onTimeout;
+  /// Live armed state for the UI.
+  final ValueNotifier<CameraScanState> state = ValueNotifier<CameraScanState>(
+    CameraScanState.idle,
+  );
 
-  /// Live armed/countdown state for the UI.
-  final ValueNotifier<CameraScanState> state =
-      ValueNotifier<CameraScanState>(CameraScanState.idle);
-
-  DateTime _deadline = DateTime.fromMillisecondsSinceEpoch(0);
   bool _looping = false;
   bool _disposed = false;
 
-  /// Arms (or re-arms) the scanner: the scan window restarts from now. Only
+  /// Arms the scanner: starts the continuous scan loop. Only
   /// one poll loop ever runs regardless of how many times this is called.
   void arm() {
-    if (_disposed) {
-      return;
-    }
-    _deadline = DateTime.now().add(scanWindow);
-    _publish();
-    if (_looping) {
+    if (_disposed || _looping) {
       return;
     }
     _looping = true;
-    _logger.info('Camera scan armed (${scanWindow.inSeconds}s window)');
+    state.value = const CameraScanState(armed: true);
+    _logger.info('Camera scan armed (continuous)');
     unawaited(_loop());
   }
 
   Future<void> _loop() async {
     try {
-      while (!_disposed && DateTime.now().isBefore(_deadline)) {
-        _publish();
+      while (!_disposed && _looping) {
         try {
           final frame = await _grabber();
           if (frame != null) {
             final barcode = await _decoder(frame);
             if (barcode != null && barcode.isNotEmpty) {
               _logger.info('Camera scan decoded: $barcode');
-              _disarm();
+              disarm();
               onBarcode?.call(barcode);
               return;
             }
           }
         } catch (e) {
-          // A bad frame/decode must never kill the scan window.
+          // A bad frame/decode must never kill the scan loop.
           _logger.warning('Camera scan attempt failed: $e');
         }
         await Future<void>.delayed(pollInterval);
       }
-      if (!_disposed) {
-        _logger.info('Camera scan window expired without a barcode');
-        _disarm();
-        onTimeout?.call();
-      }
     } finally {
-      _looping = false;
+      disarm();
     }
   }
 
-  void _disarm() {
+  /// Manually stops the active scan loop and resets state to idle.
+  void disarm() {
     _looping = false;
-    _deadline = DateTime.fromMillisecondsSinceEpoch(0);
-    if (!_disposed) {
+    if (!_disposed && state.value.armed) {
       state.value = CameraScanState.idle;
     }
-  }
-
-  void _publish() {
-    if (_disposed) {
-      return;
-    }
-    final remaining = _deadline.difference(DateTime.now());
-    state.value = CameraScanState(
-      armed: remaining > Duration.zero,
-      secondsLeft: remaining.isNegative ? 0 : (remaining.inMilliseconds / 1000).ceil(),
-    );
   }
 
   /// Stops any active loop and silences callbacks.
   void dispose() {
     _disposed = true;
-    _deadline = DateTime.fromMillisecondsSinceEpoch(0);
+    _looping = false;
   }
 }
