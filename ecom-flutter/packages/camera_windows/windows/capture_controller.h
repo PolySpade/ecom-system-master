@@ -17,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "capture_controller_listener.h"
 #include "capture_engine_listener.h"
@@ -94,6 +95,14 @@ class CaptureController {
 
   // Captures a still photo.
   virtual void TakePicture(const std::string& file_path) = 0;
+
+  // ECOM PATCH(frame-tap): copies the latest raw preview frame (BGRA) into
+  // |out|. Default implementation reports no frame; CaptureControllerImpl
+  // delegates to its TextureHandler.
+  virtual bool GetLatestPreviewFrame(std::vector<uint8_t>* out,
+                                     uint32_t* width, uint32_t* height) {
+    return false;
+  }
 };
 
 // Concrete implementation of the |CaptureController| interface.
@@ -126,6 +135,14 @@ class CaptureControllerImpl : public CaptureController,
   void StartRecord(const std::string& file_path) override;
   void StopRecord() override;
   void TakePicture(const std::string& file_path) override;
+
+  // ECOM PATCH(frame-tap): serves the latest preview frame from the
+  // texture handler's source buffer.
+  bool GetLatestPreviewFrame(std::vector<uint8_t>* out, uint32_t* width,
+                             uint32_t* height) override {
+    return texture_handler_ &&
+           texture_handler_->GrabLatestFrame(out, width, height);
+  }
 
   // CaptureEngineObserver
   void OnEvent(IMFMediaEvent* event) override;

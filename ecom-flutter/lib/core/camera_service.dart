@@ -141,6 +141,13 @@ class CameraService {
   /// Whether a recording is currently in progress.
   bool get isRecording => _controller?.value.isRecordingVideo ?? false;
 
+  /// Plugin camera id of the initialized camera; null before init or after
+  /// dispose. Feeds the native frame tap (camera barcode scan).
+  int? get cameraId {
+    final id = _controller?.cameraId;
+    return (id == null || id < 0) ? null : id;
+  }
+
   /// Whether the periodic health monitor is currently running (CAM-04).
   bool get healthMonitorRunning => _healthTimer != null;
 

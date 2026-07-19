@@ -9,9 +9,12 @@ library;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'core/barcode_decoder.dart';
 import 'core/barcode_handler.dart';
 import 'core/barcode_listener.dart';
+import 'core/camera_barcode_scanner.dart';
 import 'core/camera_controls.dart';
+import 'core/camera_frame_tap.dart';
 import 'core/camera_service.dart';
 import 'core/config.dart';
 import 'core/database.dart';
@@ -102,6 +105,20 @@ Future<void> main() async {
   final barcodeHandler = BarcodeHandler();
   final barcodeListener = GlobalBarcodeListener();
 
+  // Camera barcode scan (button-armed): grabs preview frames through the
+  // vendored plugin's frame tap and decodes with zxing. The decoded value
+  // feeds the SAME processBarcode path as the USB wedge.
+  final frameTap = CameraFrameTap();
+  final cameraScanner = CameraBarcodeScanner(
+    logger,
+    grabber: () async {
+      final id = cameraService.cameraId;
+      if (id == null) return null;
+      return frameTap.grabFrame(id);
+    },
+    decoder: decodeGrabbedFrame,
+  );
+
   // COMP-01/COMP-05: serialized background compression worker; terminal
   // outcomes (completed/failed/skipped) persist onto the transaction row,
   // mirroring ecom-py app_gui.py's compression on_complete callback.
@@ -127,6 +144,7 @@ Future<void> main() async {
       database: database,
       barcodeHandler: barcodeHandler,
       barcodeListener: barcodeListener,
+      cameraScanner: cameraScanner,
       compressor: compressor,
       videoStoragePath: config.videoStoragePath,
       minFreeSpaceGb: config.minFreeSpaceGb,
@@ -142,6 +160,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
     required this.database,
     required this.barcodeHandler,
     required this.barcodeListener,
+    required this.cameraScanner,
     required this.compressor,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
@@ -152,6 +171,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
   final AppDatabase database;
   final BarcodeHandler barcodeHandler;
   final GlobalBarcodeListener barcodeListener;
+  final CameraBarcodeScanner cameraScanner;
   final VideoCompressor compressor;
   final String videoStoragePath;
   final double minFreeSpaceGb;
@@ -210,6 +230,7 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
         database: widget.database,
         barcodeHandler: widget.barcodeHandler,
         barcodeListener: widget.barcodeListener,
+        cameraScanner: widget.cameraScanner,
         compressor: widget.compressor,
         videoStoragePath: widget.videoStoragePath,
         minFreeSpaceGb: widget.minFreeSpaceGb,

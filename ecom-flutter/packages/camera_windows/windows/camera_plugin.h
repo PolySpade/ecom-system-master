@@ -89,10 +89,28 @@ class CameraPlugin : public flutter::Plugin,
   bool EnumerateVideoCaptureDeviceSources(IMFActivate*** devices,
                                           UINT32* count) override;
 
+  // ECOM PATCH(frame-tap): registers the plugin-private
+  // "ecom/camera_frame_tap" MethodChannel used by the barcode scanner to
+  // grab preview frames on demand (the upstream plugin has no image
+  // stream on Windows). Kept off Pigeon so messages.g.* stays untouched.
+  void SetUpFrameTapChannel(flutter::BinaryMessenger* messenger);
+
+  // ECOM PATCH(frame-tap): handles "grabFrame" calls: returns
+  // {width, height, bytes(BGRA)} of the latest preview frame for the
+  // given cameraId, or error "no_frame"/"no_camera".
+  void HandleFrameTapCall(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+
   std::unique_ptr<CameraFactory> camera_factory_;
   flutter::TextureRegistrar* texture_registrar_;
   flutter::BinaryMessenger* messenger_;
   std::vector<std::unique_ptr<Camera>> cameras_;
+
+  // ECOM PATCH(frame-tap): keeps the frame-tap channel alive for the
+  // plugin's lifetime.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      frame_tap_channel_;
 
   friend class camera_windows::test::MockCameraPlugin;
 };

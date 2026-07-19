@@ -47,7 +47,7 @@ dependencies:
   # Native file/folder pickers for the Settings > Storage tab (SET-05).
   # First-party package published by flutter.dev.
   file_selector: ^1.0.3
-
+  zxing_lib: ^1.1.4
 dependency_overrides:
   # Vendored copy with one patch: the record stream's media type is capped
   # at the resolution preset's height (upstream always records at the

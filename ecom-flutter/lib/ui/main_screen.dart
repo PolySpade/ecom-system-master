@@ -15,11 +15,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:window_manager/window_manager.dart';
 
 import '../core/barcode_handler.dart';
 import '../core/barcode_listener.dart';
+import '../core/camera_barcode_scanner.dart';
 import '../core/camera_service.dart';
 import '../core/config.dart';
 import '../core/database.dart';
@@ -51,6 +53,7 @@ class MainScreen extends StatefulWidget {
     required this.database,
     required this.barcodeHandler,
     required this.barcodeListener,
+    required this.cameraScanner,
     required this.compressor,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
@@ -72,6 +75,12 @@ class MainScreen extends StatefulWidget {
   /// [_submitBarcode] path manual entry uses (BAR-02) - no duplicated
   /// start/stop/DB orchestration.
   final GlobalBarcodeListener barcodeListener;
+
+  /// Button-armed camera barcode scanner (design 2026-07-19): the Scan
+  /// button / F2 arm a bounded scan window over the recording camera's
+  /// preview; a decoded barcode enters the SAME [_handleScannedBarcode]
+  /// path as the USB wedge - full parity, including mid-recording.
+  final CameraBarcodeScanner cameraScanner;
 
   /// Serialized background FFmpeg worker (COMP-01). Each recording gets
   /// ONE post-save job that burns the watermark (REC-06) and compresses in
@@ -130,6 +139,17 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     // manual entry uses (BAR-02) - no duplicated orchestration.
     widget.barcodeListener.onBarcodeScanned = _handleScannedBarcode;
 
+    // Camera scan feeds that identical path; timeout only pings the status
+    // bar. F2 arms without touching the wedge listener (F2 emits no
+    // character, so it can't corrupt an in-flight wedge scan buffer).
+    widget.cameraScanner.onBarcode = (barcode) {
+      _setStatusBar('Camera scan: $barcode');
+      _handleScannedBarcode(barcode);
+    };
+    widget.cameraScanner.onTimeout =
+        () => _setStatusBar('Camera scan: no barcode found');
+    HardwareKeyboard.instance.addHandler(_handleScanHotkey);
+
     // Camera reinit + salvage hooks (CAM-04).
     widget.cameraService.onCameraStateChanged = _onCameraStateChanged;
     widget.cameraService.onRecordingSalvaged = _onRecordingSalvaged;
@@ -149,8 +169,31 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
     windowManager.addListener(this);
   }
 
+  /// F2 arms the camera scan (button-armed mode). Registered as a
+  /// top-level HardwareKeyboard handler alongside the wedge listener.
+  bool _handleScanHotkey(KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.f2) {
+      _armCameraScan();
+      return true;
+    }
+    return false;
+  }
+
+  void _armCameraScan() {
+    if (widget.cameraService.cameraId == null) {
+      _setStatusBar('Camera scan unavailable - camera not ready');
+      return;
+    }
+    widget.cameraScanner.arm();
+    _setStatusBar('Camera scan armed - point the barcode at the camera');
+  }
+
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleScanHotkey);
+    widget.cameraScanner.onBarcode = null;
+    widget.cameraScanner.onTimeout = null;
     windowManager.removeListener(this);
     _ticker?.cancel();
     _statusBarTimer?.cancel();
@@ -837,6 +880,25 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+            // Camera scan (button-armed): shows a countdown while the scan
+            // window is open. F2 is the keyboard equivalent.
+            ValueListenableBuilder<CameraScanState>(
+              valueListenable: widget.cameraScanner.state,
+              builder: (context, scan, _) {
+                return FilledButton.tonalIcon(
+                  icon: Icon(
+                    scan.armed ? Icons.qr_code_scanner : Icons.photo_camera,
+                  ),
+                  onPressed: scan.armed ? null : _armCameraScan,
+                  label: Text(
+                    scan.armed
+                        ? 'Scanning... (${scan.secondsLeft}s)'
+                        : 'Scan with Camera (F2)',
+                  ),
+                );
+              },
             ),
           ],
         ),

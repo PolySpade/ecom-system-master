@@ -55,6 +55,21 @@ bool TextureHandler::UpdateBuffer(uint8_t* data, uint32_t data_length) {
   return true;
 };
 
+// ECOM PATCH(frame-tap): see texture_handler.h.
+bool TextureHandler::GrabLatestFrame(std::vector<uint8_t>* out, uint32_t* width,
+                                     uint32_t* height) {
+  const std::lock_guard<std::mutex> lock(buffer_mutex_);
+  const uint32_t data_size =
+      preview_frame_width_ * preview_frame_height_ * bytes_per_pixel_;
+  if (data_size == 0 || source_buffer_.size() != data_size) {
+    return false;
+  }
+  out->assign(source_buffer_.begin(), source_buffer_.end());
+  *width = preview_frame_width_;
+  *height = preview_frame_height_;
+  return true;
+}
+
 // Marks texture frame available after buffer is updated.
 void TextureHandler::OnBufferUpdated() {
   if (TextureRegistered()) {

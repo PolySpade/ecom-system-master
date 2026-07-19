@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace camera_windows {
 
@@ -43,6 +44,13 @@ class TextureHandler {
 
   // Updates source data buffer with given data.
   bool UpdateBuffer(uint8_t* data, uint32_t data_length);
+
+  // ECOM PATCH(frame-tap): copies the most recent raw preview frame
+  // (MFVideoFormat_RGB32 = BGRA byte order, unmirrored - mirroring only
+  // happens in the texture conversion) into |out|. Returns false when no
+  // frame has arrived yet. Thread-safe against UpdateBuffer.
+  bool GrabLatestFrame(std::vector<uint8_t>* out, uint32_t* width,
+                       uint32_t* height);
 
   // Registers texture and updates given texture_id pointer value.
   int64_t RegisterTexture();

@@ -131,14 +131,72 @@ CameraPlugin::CameraPlugin(flutter::TextureRegistrar* texture_registrar,
                            flutter::BinaryMessenger* messenger)
     : texture_registrar_(texture_registrar),
       messenger_(messenger),
-      camera_factory_(std::make_unique<CameraFactoryImpl>()) {}
+      camera_factory_(std::make_unique<CameraFactoryImpl>()) {
+  SetUpFrameTapChannel(messenger);
+}
 
 CameraPlugin::CameraPlugin(flutter::TextureRegistrar* texture_registrar,
                            flutter::BinaryMessenger* messenger,
                            std::unique_ptr<CameraFactory> camera_factory)
     : texture_registrar_(texture_registrar),
       messenger_(messenger),
-      camera_factory_(std::move(camera_factory)) {}
+      camera_factory_(std::move(camera_factory)) {
+  SetUpFrameTapChannel(messenger);
+}
+
+// ECOM PATCH(frame-tap): see camera_plugin.h.
+void CameraPlugin::SetUpFrameTapChannel(flutter::BinaryMessenger* messenger) {
+  frame_tap_channel_ =
+      std::make_unique<flutter::MethodChannel<EncodableValue>>(
+          messenger, "ecom/camera_frame_tap",
+          &flutter::StandardMethodCodec::GetInstance());
+  frame_tap_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<EncodableValue>> result) {
+        HandleFrameTapCall(call, std::move(result));
+      });
+}
+
+// ECOM PATCH(frame-tap): see camera_plugin.h.
+void CameraPlugin::HandleFrameTapCall(
+    const flutter::MethodCall<EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<EncodableValue>> result) {
+  if (call.method_name() != "grabFrame") {
+    result->NotImplemented();
+    return;
+  }
+  const auto* args = std::get_if<EncodableMap>(call.arguments());
+  if (!args) {
+    result->Error("bad_args", "Expected map argument with cameraId");
+    return;
+  }
+  auto it = args->find(EncodableValue("cameraId"));
+  if (it == args->end()) {
+    result->Error("bad_args", "cameraId missing");
+    return;
+  }
+  const int64_t camera_id = it->second.LongValue();
+  Camera* camera = GetCameraByCameraId(camera_id);
+  if (!camera) {
+    result->Error("no_camera", "Camera not found");
+    return;
+  }
+  CaptureController* cc = camera->GetCaptureController();
+  std::vector<uint8_t> bytes;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  if (!cc || !cc->GetLatestPreviewFrame(&bytes, &width, &height)) {
+    result->Error("no_frame", "No preview frame available");
+    return;
+  }
+  EncodableMap frame;
+  frame[EncodableValue("width")] =
+      EncodableValue(static_cast<int64_t>(width));
+  frame[EncodableValue("height")] =
+      EncodableValue(static_cast<int64_t>(height));
+  frame[EncodableValue("bytes")] = EncodableValue(std::move(bytes));
+  result->Success(EncodableValue(std::move(frame)));
+}
 
 CameraPlugin::~CameraPlugin() {}
 
