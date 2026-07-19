@@ -101,6 +101,7 @@ void main() {
 
   VideoCompressor buildCompressor({
     FfmpegFinder? ffmpegFinder,
+    SourceBitrateProber? bitrateProber,
     Duration jobTimeout = const Duration(hours: 1),
   }) {
     return VideoCompressor(
@@ -109,6 +110,7 @@ void main() {
       processStarter: fakeStarter,
       ffmpegFinder: ffmpegFinder ?? () async => p.join(tempDir.path, 'ffmpeg'),
       priorityApplier: fakePriorityApplier,
+      bitrateProber: bitrateProber ?? (_) async => null,
       jobTimeout: jobTimeout,
     );
   }
@@ -525,6 +527,117 @@ void main() {
       expect('${callbacks.single.data['message']}', contains('timed out'));
       // The original is untouched.
       expect(input.readAsBytesSync().length, 1000);
+
+      await compressor.stop();
+    });
+  });
+
+  group('size guard & source bitrate cap', () {
+    test('probed source bitrate adds -maxrate/-bufsize to the args', () async {
+      final input = createInput('video.mp4');
+      final probedPaths = <String>[];
+      final compressor = buildCompressor(
+        bitrateProber: (path) async {
+          probedPaths.add(path);
+          return 6000; // kbps
+        },
+      );
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        1,
+        const CompressionSettings(),
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      expect(probedPaths, [input.path]);
+      final args = startedCommands.single.$2;
+      expect(args[args.indexOf('-maxrate') + 1], '6000k');
+      expect(args[args.indexOf('-bufsize') + 1], '12000k');
+
+      processes.single.completeWith(1);
+      await compressor.stop();
+    });
+
+    test('unknown source bitrate omits -maxrate/-bufsize', () async {
+      final input = createInput('video.mp4');
+      final compressor = buildCompressor(bitrateProber: (_) async => null);
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        2,
+        const CompressionSettings(),
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      final args = startedCommands.single.$2;
+      expect(args, isNot(contains('-maxrate')));
+      expect(args, isNot(contains('-bufsize')));
+
+      processes.single.completeWith(1);
+      await compressor.stop();
+    });
+
+    test('larger output on a plain job keeps the original', () async {
+      final input = createInput('video.mp4', sizeBytes: 1000);
+      final compressor = buildCompressor();
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        50,
+        const CompressionSettings(),
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      // FFmpeg "reverse compresses": output larger than the original.
+      final process = processes.single;
+      File(process.outputPath).writeAsBytesSync(List<int>.filled(2000, 0x42));
+      process.completeWith(0);
+      await waitUntil(() => callbacks.isNotEmpty, reason: 'completion');
+
+      final record = callbacks.single;
+      expect(record.success, isTrue);
+      expect(record.data['status'], 'completed');
+      expect('${record.data['message']}', contains('kept original'));
+      expect(record.data['compressed_filename'], 'video.mp4');
+      expect((record.data['compression_ratio'] as double), 0.0);
+      expect(
+        (record.data['compressed_file_size_mb'] as double),
+        closeTo(1000 / (1024 * 1024), 1e-9),
+      );
+      // Original untouched, useless larger output deleted.
+      expect(input.readAsBytesSync().length, 1000);
+      expect(File(process.outputPath).existsSync(), isFalse);
+
+      await compressor.stop();
+    });
+
+    test('larger output on a watermark job still swaps (overlay required)',
+        () async {
+      final input = createInput('video.mp4', sizeBytes: 1000);
+      final compressor = buildCompressor();
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        51,
+        const CompressionSettings(),
+        videoFilter: 'drawtext=x=1',
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      final process = processes.single;
+      File(process.outputPath).writeAsBytesSync(List<int>.filled(2000, 0x42));
+      process.completeWith(0);
+      await waitUntil(() => callbacks.isNotEmpty, reason: 'completion');
+
+      final record = callbacks.single;
+      expect(record.success, isTrue);
+      expect(record.data['status'], 'completed');
+      expect(record.data['compressed_filename'], 'video.mp4');
+      expect((record.data['compression_ratio'] as double), closeTo(-100.0, 0.01));
+      // The watermarked (larger) encode replaced the original.
+      expect(input.readAsBytesSync().length, 2000);
+      expect(File('${input.path}.bak').existsSync(), isFalse);
 
       await compressor.stop();
     });

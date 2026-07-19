@@ -158,8 +158,46 @@ typedef ProcessStarter = Future<Process> Function(
 /// Seam for FFmpeg discovery (defaults to [FfmpegLocator.findFfmpeg]).
 typedef FfmpegFinder = Future<String?> Function();
 
+/// Seam for probing a video's source bitrate in kbit/s (null when it cannot
+/// be determined). Defaults to an ffprobe invocation.
+typedef SourceBitrateProber = Future<int?> Function(String videoPath);
+
 /// Seam for applying process priority (defaults to [setProcessPriority]).
 typedef PriorityApplier = bool Function(int pid, String priority);
+
+/// Default [SourceBitrateProber]: asks ffprobe for the video stream's
+/// bitrate (falling back to the container bitrate). Returns kbit/s, or null
+/// when ffprobe is missing or the probe fails - callers then encode without
+/// a rate cap, exactly the pre-probe behavior.
+Future<int?> probeSourceBitrateKbps(String videoPath) async {
+  final ffprobe = await FfmpegLocator.findFfprobe();
+  if (ffprobe == null) {
+    return null;
+  }
+  try {
+    final result = await Process.run(ffprobe, [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=bit_rate:format=bit_rate',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      videoPath,
+    ]);
+    if (result.exitCode != 0) {
+      return null;
+    }
+    // Stream bitrate is printed first when known; some containers only
+    // report a format-level bitrate ("N/A" lines are skipped).
+    for (final line in '${result.stdout}'.split(RegExp(r'\r?\n'))) {
+      final bps = int.tryParse(line.trim());
+      if (bps != null && bps > 0) {
+        return bps ~/ 1000;
+      }
+    }
+  } catch (_) {
+    // Probe failures are non-fatal - the encode just runs uncapped.
+  }
+  return null;
+}
 
 /// Background video compression worker using FFmpeg.
 class VideoCompressor {
@@ -174,11 +212,13 @@ class VideoCompressor {
     ProcessStarter? processStarter,
     FfmpegFinder? ffmpegFinder,
     PriorityApplier? priorityApplier,
+    SourceBitrateProber? bitrateProber,
     Duration jobTimeout = const Duration(hours: 1),
   })  : _onComplete = onComplete,
         _processStarter = processStarter ?? _defaultProcessStarter,
         _ffmpegFinder = ffmpegFinder ?? FfmpegLocator.findFfmpeg,
         _priorityApplier = priorityApplier ?? setProcessPriority,
+        _bitrateProber = bitrateProber ?? probeSourceBitrateKbps,
         _jobTimeout = jobTimeout;
 
   final Logger _logger;
@@ -186,6 +226,7 @@ class VideoCompressor {
   final ProcessStarter _processStarter;
   final FfmpegFinder _ffmpegFinder;
   final PriorityApplier _priorityApplier;
+  final SourceBitrateProber _bitrateProber;
   final Duration _jobTimeout;
 
   final ListQueue<CompressionJob> _queue = ListQueue<CompressionJob>();
@@ -343,6 +384,32 @@ class VideoCompressor {
       final outputFile = File(outputPath);
       final outputSize = outputFile.existsSync() ? outputFile.lengthSync() : 0;
 
+      if (success && outputSize > 0 &&
+          job.videoFilter == null && outputSize >= originalSize) {
+        // The source was already leaner than what this CRF produces, so the
+        // "compressed" file came out no smaller. Nothing but size is at
+        // stake on a filter-less job - keep the original.
+        try {
+          outputFile.deleteSync();
+        } catch (_) {
+          // Best-effort cleanup.
+        }
+        _logger.info(
+          'Compression not beneficial '
+          '(${originalSizeMb.toStringAsFixed(2)}MB -> '
+          '${(outputSize / (1024 * 1024)).toStringAsFixed(2)}MB), '
+          'keeping original',
+        );
+        _onComplete?.call(job.transactionId, true, {
+          'status': CompressionStatus.completed.value,
+          'compressed_file_size_mb': originalSizeMb,
+          'compression_ratio': 0.0,
+          'compressed_filename': p.basename(job.videoPath),
+          'message': 'Compression not beneficial - kept original',
+        });
+        return;
+      }
+
       if (success && outputSize > 0) {
         final compressedSizeMb = outputSize / (1024 * 1024);
         final compressionRatio =
@@ -432,6 +499,13 @@ class VideoCompressor {
     final videoCodec = settings.codec == 'h265' ? 'libx265' : 'libx264';
     final crf = settings.crf.clamp(18, 35);
 
+    // Cap the encode at the source's bitrate: recordings are already H.264
+    // at the configured recording bitrate, and an uncapped CRF encode can
+    // exceed it (e.g. CRF 23 at 4K produces ~9 Mbit/s - "compressing" a
+    // 6 Mbit/s original into a larger file). null = probe unavailable,
+    // encode uncapped as before.
+    final sourceKbps = await _bitrateProber(job.videoPath);
+
     // Same invocation as ecom-py: capped threads so compression can't
     // starve capture/UI, AAC audio passthrough settings, -y to overwrite
     // a stale temp file.
@@ -441,6 +515,10 @@ class VideoCompressor {
       '-c:v', videoCodec,
       '-crf', '$crf',
       '-preset', settings.preset,
+      if (sourceKbps != null && sourceKbps > 0) ...[
+        '-maxrate', '${sourceKbps}k',
+        '-bufsize', '${sourceKbps * 2}k',
+      ],
       '-threads', '2',
       '-c:a', 'aac',
       '-b:a', '128k',
