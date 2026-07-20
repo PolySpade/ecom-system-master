@@ -18,7 +18,6 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/camera_service.dart';
 import '../core/database.dart';
-import '../core/ffmpeg_locator.dart';
 import '../core/settings_manager.dart';
 
 /// Resolution presets, matching SettingsDialog.RESOLUTION_PRESETS.
@@ -92,16 +91,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _videoPathController;
   late final TextEditingController _logPathController;
 
-  // --- Compression tab state (SET-06) ---
+  // --- Watermark tab state ---
   late bool _watermarkEnabled;
-  late bool _compressionEnabled;
-  late String _compressionCodec;
-  late double _compressionCrf;
-  late String _compressionPreset;
-  late bool _deleteOriginal;
-  late String _compressionPriority;
-  String? _ffmpegPath;
-  bool _ffmpegChecked = false;
 
   // Snapshot of capture-affecting values at open time, for deciding
   // whether Save & Apply must reinitialize the camera (SET-08).
@@ -141,27 +132,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     _watermarkEnabled =
         sm.get('video', 'watermark_enabled', true)! as bool;
-    _compressionEnabled = sm.get('compression', 'enabled', true)! as bool;
-    _compressionCodec =
-        sm.get('compression', 'codec', 'h264')! as String;
-    _compressionCrf =
-        (sm.get('compression', 'crf', 23)! as num).toDouble().clamp(18, 35);
-    _compressionPreset =
-        sm.get('compression', 'preset', 'medium')! as String;
-    _deleteOriginal =
-        sm.get('compression', 'delete_original', true)! as bool;
-    _compressionPriority =
-        sm.get('compression', 'priority', 'below_normal')! as String;
-
-    // Live FFmpeg found/not-found status for the Compression tab (SET-06).
-    FfmpegLocator.findFfmpeg().then((path) {
-      if (mounted) {
-        setState(() {
-          _ffmpegPath = path;
-          _ffmpegChecked = true;
-        });
-      }
-    });
 
     _refreshCameras();
   }
@@ -231,13 +201,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String resolutionPreset,
     required int fps,
     required int bitrateKbps,
-    required String compressionPreset,
   }) {
     setState(() {
       _resolutionPreset = resolutionPreset;
       _fps = fps;
       _bitrateKbps = bitrateKbps;
-      _compressionPreset = compressionPreset;
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text("$name preset loaded - press Save & Apply to use it"),
@@ -264,11 +232,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 resolutionPreset: '1280x720 (HD)',
                 fps: 30,
                 bitrateKbps: 4000,
-                // veryfast, not ultrafast: ultrafast needs MORE bits than
-                // the lean 4 Mbit/s source at the same CRF, so it cannot
-                // shrink these recordings; veryfast is nearly as light on
-                // CPU and actually compresses.
-                compressionPreset: 'veryfast',
               ),
             ),
             FilledButton.tonalIcon(
@@ -279,7 +242,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 resolutionPreset: '1280x720 (HD)',
                 fps: 30,
                 bitrateKbps: 6000,
-                compressionPreset: 'medium',
               ),
             ),
             FilledButton.tonalIcon(
@@ -290,15 +252,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 resolutionPreset: '1920x1080 (Full HD)',
                 fps: 30,
                 bitrateKbps: 8000,
-                compressionPreset: 'medium',
               ),
             ),
           ],
         ),
         const SizedBox(height: 4),
         Text(
-          'Low-end PC: 720p, 30 FPS, 4 Mbit/s, fast encoding - use this '
-          'if the preview or recordings lag on weaker machines.',
+          'Low-end PC: 720p, 30 FPS, 4 Mbit/s - use this if the preview '
+          'or recordings lag on weaker devices.',
           style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
         ),
         const Divider(height: 24),
@@ -611,144 +572,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildCompressionTab() {
-    final ffmpegFound = _ffmpegPath != null;
+  Widget _buildWatermarkTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // FFmpeg availability status (SET-06 / COMP-02).
-        Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: !_ffmpegChecked
-                ? Colors.grey.shade200
-                : (ffmpegFound ? Colors.green.shade50 : Colors.red.shade50),
-            borderRadius: BorderRadius.circular(4),
-            border: Border.all(
-              color: !_ffmpegChecked
-                  ? Colors.grey.shade400
-                  : (ffmpegFound
-                      ? Colors.green.shade400
-                      : Colors.red.shade400),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                !_ffmpegChecked
-                    ? Icons.hourglass_empty
-                    : (ffmpegFound ? Icons.check_circle : Icons.error),
-                size: 18,
-                color: !_ffmpegChecked
-                    ? Colors.grey
-                    : (ffmpegFound
-                        ? Colors.green.shade800
-                        : Colors.red.shade800),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  !_ffmpegChecked
-                      ? 'Checking for FFmpeg...'
-                      : (ffmpegFound
-                          ? 'FFmpeg found: $_ffmpegPath'
-                          : 'FFmpeg NOT found - watermarking and compression '
-                              'are skipped. Recording still works normally.'),
-                  style: const TextStyle(fontSize: 12),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
         SwitchListTile(
           title: const Text('Burn watermark into videos'),
           subtitle: const Text(
-            'Timestamp, label, and barcode overlaid on the saved file',
+            'Timestamp, label, and barcode overlaid on the saved file '
+            '(runs in the background after each recording saves)',
           ),
           value: _watermarkEnabled,
           onChanged: (v) => setState(() => _watermarkEnabled = v),
         ),
-        SwitchListTile(
-          title: const Text('Compress videos'),
-          subtitle: const Text(
-            'Re-encode recordings to reduce file size. When the watermark '
-            'is on, watermarking and compression happen in the same pass. '
-            'Recordings are always mirrored to match the live preview, so '
-            'every video is re-encoded at least once even with this off.',
-          ),
-          value: _compressionEnabled,
-          onChanged: (v) => setState(() => _compressionEnabled = v),
-        ),
-        const Divider(height: 32),
-        DropdownButtonFormField<String>(
-          initialValue: _compressionCodec,
-          decoration: const InputDecoration(
-            labelText: 'Codec',
-            border: OutlineInputBorder(),
-          ),
-          items: const [
-            DropdownMenuItem(
-                value: 'h264', child: Text('H.264 (compatible)')),
-            DropdownMenuItem(
-                value: 'h265', child: Text('H.265 (smaller files)')),
-          ],
-          onChanged: (v) =>
-              setState(() => _compressionCodec = v ?? _compressionCodec),
-        ),
-        const SizedBox(height: 16),
-        Text('Quality (CRF ${_compressionCrf.round()} - lower is better):',
-            style: const TextStyle(fontWeight: FontWeight.bold)),
-        Slider(
-          value: _compressionCrf,
-          min: 18,
-          max: 35,
-          divisions: 17,
-          label: '${_compressionCrf.round()}',
-          onChanged: (v) => setState(() => _compressionCrf = v),
-        ),
         const SizedBox(height: 8),
-        DropdownButtonFormField<String>(
-          key: ValueKey('comp-preset-$_compressionPreset'),
-          initialValue: _compressionPreset,
-          decoration: const InputDecoration(
-            labelText: 'Encoding Speed Preset',
-            border: OutlineInputBorder(),
-          ),
-          items: const [
-            DropdownMenuItem(
-                value: 'ultrafast', child: Text('Ultrafast (biggest files)')),
-            DropdownMenuItem(value: 'veryfast', child: Text('Very fast')),
-            DropdownMenuItem(value: 'fast', child: Text('Fast')),
-            DropdownMenuItem(value: 'medium', child: Text('Medium')),
-            DropdownMenuItem(
-                value: 'slow', child: Text('Slow (smallest files)')),
-          ],
-          onChanged: (v) =>
-              setState(() => _compressionPreset = v ?? _compressionPreset),
-        ),
-        const SizedBox(height: 8),
-        SwitchListTile(
-          title: const Text('Replace original after compression'),
-          subtitle: const Text(
-              'Off keeps the original and the compressed copy side by side'),
-          value: _deleteOriginal,
-          onChanged: (v) => setState(() => _deleteOriginal = v),
-        ),
-        DropdownButtonFormField<String>(
-          initialValue: _compressionPriority,
-          decoration: const InputDecoration(
-            labelText: 'FFmpeg Process Priority',
-            border: OutlineInputBorder(),
-          ),
-          items: const [
-            DropdownMenuItem(
-                value: 'low', child: Text('Low (least impact on recording)')),
-            DropdownMenuItem(value: 'below_normal', child: Text('Below Normal')),
-            DropdownMenuItem(value: 'normal', child: Text('Normal')),
-          ],
-          onChanged: (v) => setState(
-              () => _compressionPriority = v ?? _compressionPriority),
+        Text(
+          'There is no separate compression step on mobile: recordings are '
+          'already encoded at the configured recording bitrate. FFmpeg is '
+          'built into the app, so no external install is needed.',
+          style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
         ),
       ],
     );
@@ -811,14 +653,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       'recording_bitrate_kbps': _bitrateKbps,
       'watermark_enabled': _watermarkEnabled,
     });
-    sm.updateCategory('compression', {
-      'enabled': _compressionEnabled,
-      'codec': _compressionCodec,
-      'crf': _compressionCrf.round(),
-      'preset': _compressionPreset,
-      'delete_original': _deleteOriginal,
-      'priority': _compressionPriority,
-    });
+    // The 'compression' settings category is deliberately untouched: no
+    // compression runs on mobile, but the keys survive round-trips for
+    // settings.json compatibility with the desktop app.
     sm.updateCategory('camera', {
       'index': _cameraIndex,
     });
@@ -939,7 +776,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             tabs: [
               Tab(text: 'Video'),
               Tab(text: 'Camera'),
-              Tab(text: 'Compression'),
+              Tab(text: 'Watermark'),
               Tab(text: 'Storage'),
             ],
           ),
@@ -951,7 +788,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   _buildVideoTab(),
                   _buildCameraTab(),
-                  _buildCompressionTab(),
+                  _buildWatermarkTab(),
                   _buildStorageTab(),
                 ],
               ),

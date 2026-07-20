@@ -17,8 +17,8 @@ import 'core/camera_service.dart';
 import 'core/config.dart';
 import 'core/database.dart';
 import 'core/logger.dart';
-import 'core/video_compressor.dart';
 import 'core/startup_cleanup.dart';
+import 'core/watermark_service.dart';
 import 'ui/main_screen.dart';
 
 /// Toggle between the two candidate global-keyboard-capture mechanisms for
@@ -44,11 +44,11 @@ Future<void> main() async {
 
   final database = await AppDatabase.open(config.databasePath, logger);
   // Jobs killed mid-flight (app closed during FFmpeg) return to the
-  // Compress All backlog; their partial temp files are junk - remove them.
+  // watermark backlog; their partial temp files are junk - remove them.
   await database.resetStuckProcessing();
   await cleanStaleTempFiles(
     config.videoStoragePath,
-    deleteOriginalMode: config.compressionDeleteOriginal,
+    deleteOriginalMode: false,
     logger: logger,
   );
 
@@ -76,9 +76,10 @@ Future<void> main() async {
   final barcodeHandler = BarcodeHandler();
   final barcodeListener = GlobalBarcodeListener();
 
-  // Camera barcode scan (button-armed): grabs preview frames through the
-  // vendored plugin's frame tap and decodes with zxing. The decoded value
-  // feeds the SAME processBarcode path as the USB wedge.
+  // Camera barcode scan (button-armed): grabs preview frames and decodes
+  // with zxing. The decoded value feeds the SAME processBarcode path as a
+  // Bluetooth wedge scanner. (The frame grabber is the desktop native
+  // channel for now - replaced by the CameraX image stream in B4.)
   final frameTap = CameraFrameTap();
   final cameraScanner = CameraBarcodeScanner(
     logger,
@@ -90,24 +91,10 @@ Future<void> main() async {
     decoder: decodeGrabbedFrame,
   );
 
-  // COMP-01/COMP-05: serialized background compression worker; terminal
-  // outcomes (completed/failed/skipped) persist onto the transaction row,
-  // mirroring ecom-py app_gui.py's compression on_complete callback.
-  final compressor = VideoCompressor(
-    logger,
-    onComplete: (transactionId, success, resultData) {
-      database.updateCompressionStatus(
-        transactionId,
-        resultData['status'] as String? ?? 'failed',
-        compressedFileSizeMb:
-            (resultData['compressed_file_size_mb'] as num?)?.toDouble(),
-        compressionRatio:
-            (resultData['compression_ratio'] as num?)?.toDouble(),
-        compressedFilename: resultData['compressed_filename'] as String?,
-      );
-    },
-  );
-  compressor.start();
+  // Serialized post-save watermark worker (the only re-encode on mobile -
+  // recordings are already hardware-encoded at the configured bitrate, so
+  // there is no separate compression pass).
+  final watermarkService = WatermarkService(logger);
 
   runApp(
     EcomVideoTrackerApp(
@@ -116,7 +103,7 @@ Future<void> main() async {
       barcodeHandler: barcodeHandler,
       barcodeListener: barcodeListener,
       cameraScanner: cameraScanner,
-      compressor: compressor,
+      watermarkService: watermarkService,
       videoStoragePath: config.videoStoragePath,
       minFreeSpaceGb: config.minFreeSpaceGb,
       config: config,
@@ -132,7 +119,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
     required this.barcodeHandler,
     required this.barcodeListener,
     required this.cameraScanner,
-    required this.compressor,
+    required this.watermarkService,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
     required this.config,
@@ -143,7 +130,7 @@ class EcomVideoTrackerApp extends StatefulWidget {
   final BarcodeHandler barcodeHandler;
   final GlobalBarcodeListener barcodeListener;
   final CameraBarcodeScanner cameraScanner;
-  final VideoCompressor compressor;
+  final WatermarkService watermarkService;
   final String videoStoragePath;
   final double minFreeSpaceGb;
   final Config config;
@@ -202,7 +189,7 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
         barcodeHandler: widget.barcodeHandler,
         barcodeListener: widget.barcodeListener,
         cameraScanner: widget.cameraScanner,
-        compressor: widget.compressor,
+        watermarkService: widget.watermarkService,
         videoStoragePath: widget.videoStoragePath,
         minFreeSpaceGb: widget.minFreeSpaceGb,
         config: widget.config,

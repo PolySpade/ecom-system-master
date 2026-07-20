@@ -158,15 +158,15 @@ void main() {
     });
   });
 
-  group('findWindowsFontFile', () {
+  group('findSystemFontFile', () {
     test('returns null when no candidate exists', () {
-      expect(findWindowsFontFile(fontsDir: tempDir.path), isNull);
+      expect(findSystemFontFile(fontsDir: tempDir.path), isNull);
     });
 
     test('returns the first available candidate', () {
-      final segoe = File(p.join(tempDir.path, 'segoeui.ttf'))
+      final noto = File(p.join(tempDir.path, 'NotoSans-Regular.ttf'))
         ..writeAsStringSync('font');
-      expect(findWindowsFontFile(fontsDir: tempDir.path), segoe.path);
+      expect(findSystemFontFile(fontsDir: tempDir.path), noto.path);
     });
   });
 
@@ -182,29 +182,13 @@ void main() {
           recordingStart: DateTime(2026, 7, 13, 12, 0, 0),
         );
 
-    test('skips gracefully when FFmpeg is absent, keeping the video', () async {
-      final video = createVideo('a.mp4');
-      final service = WatermarkService(
-        logger,
-        findFfmpeg: () async => null,
-        findFont: () => 'arial.ttf',
-        runProcess: (exe, args) async => fail('must not run ffmpeg'),
-      );
-
-      final outcome = await service.enqueue(jobFor(video));
-
-      expect(outcome, WatermarkOutcome.skippedNoFfmpeg);
-      expect(video.readAsStringSync(), 'ORIGINAL');
-    });
-
     test('skips gracefully when no font is found, keeping the video',
         () async {
       final video = createVideo('a.mp4');
       final service = WatermarkService(
         logger,
-        findFfmpeg: () async => 'ffmpeg.exe',
         findFont: () => null,
-        runProcess: (exe, args) async => fail('must not run ffmpeg'),
+        runFfmpeg: (args) async => fail('must not run ffmpeg'),
       );
 
       final outcome = await service.enqueue(jobFor(video));
@@ -218,12 +202,11 @@ void main() {
       final video = createVideo('a.mp4');
       final service = WatermarkService(
         logger,
-        findFfmpeg: () async => 'ffmpeg.exe',
         findFont: () => 'arial.ttf',
-        runProcess: (exe, args) async {
+        runFfmpeg: (args) async {
           // Simulate ffmpeg writing the output file (last arg).
           File(args.last).writeAsStringSync('WATERMARKED');
-          return ProcessResult(0, 0, '', '');
+          return const FfmpegRunResult(0);
         },
       );
 
@@ -245,9 +228,8 @@ void main() {
       final video = createVideo('a.mp4');
       final service = WatermarkService(
         logger,
-        findFfmpeg: () async => 'ffmpeg.exe',
         findFont: () => 'arial.ttf',
-        runProcess: (exe, args) async => ProcessResult(0, 1, '', 'boom'),
+        runFfmpeg: (args) async => const FfmpegRunResult(1, 'boom'),
       );
 
       final outcome = await service.enqueue(jobFor(video));
@@ -260,9 +242,8 @@ void main() {
         () async {
       final service = WatermarkService(
         logger,
-        findFfmpeg: () async => 'ffmpeg.exe',
         findFont: () => 'arial.ttf',
-        runProcess: (exe, args) async => fail('must not run ffmpeg'),
+        runFfmpeg: (args) async => fail('must not run ffmpeg'),
       );
 
       final outcome = await service.enqueue(
@@ -287,16 +268,15 @@ void main() {
 
       final service = WatermarkService(
         logger,
-        findFfmpeg: () async => 'ffmpeg.exe',
         findFont: () => 'arial.ttf',
-        runProcess: (exe, args) async {
+        runFfmpeg: (args) async {
           concurrent++;
           if (concurrent > maxConcurrent) maxConcurrent = concurrent;
           order.add(p.basename(args[args.indexOf('-i') + 1]));
           await Future<void>.delayed(const Duration(milliseconds: 20));
           File(args.last).writeAsStringSync('WATERMARKED');
           concurrent--;
-          return ProcessResult(0, 0, '', '');
+          return const FfmpegRunResult(0);
         },
       );
 

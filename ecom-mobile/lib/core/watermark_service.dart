@@ -1,33 +1,35 @@
 /// Watermark Service - post-save FFmpeg drawtext watermarking.
 ///
-/// Behavioral port of ecom-py/camera_handler.py's _add_timestamp_watermark
-/// layout (timestamp top-left, label top-right on the #667eea brand box,
-/// "Barcode: X" bottom-left, white text on dark boxes) - implemented as a
-/// post-save re-encode because camera_windows does not expose per-frame
-/// access. The running timestamp uses drawtext's `pts:localtime` expansion
-/// seeded with the recording's start epoch, so it advances during playback
-/// exactly like the reference's per-frame stamps.
+/// Mobile port of the desktop watermark pass: timestamp top-left, label
+/// top-right on the #667eea brand box, "Barcode: X" bottom-left, white text
+/// on dark boxes. The running timestamp uses drawtext's `pts:localtime`
+/// expansion seeded with the recording's start epoch, so it advances during
+/// playback exactly like the reference's per-frame stamps.
 ///
-/// Jobs run on a serialized queue (one FFmpeg process at a time - same
-/// discipline as ecom-py's compression worker thread). The Phase-3
-/// compression queue chains onto a job by awaiting the Future returned from
-/// [WatermarkService.enqueue] and then queueing compression for the same
-/// path.
+/// On Android FFmpeg runs in-process through ffmpeg_kit_flutter_new (the
+/// bundled build includes libx264), and the font comes from the system
+/// fonts directory (/system/fonts) instead of C:\Windows\Fonts. This is the
+/// ONLY re-encode on mobile - recordings are already hardware-encoded at
+/// the configured bitrate, so there is no separate compression pass; the
+/// desktop compressor's role collapses into this single watermark encode.
 ///
-/// Failure policy (never lose the video): when FFmpeg or a usable font is
-/// missing, or the re-encode fails, the original saved file is left intact
-/// and a warning is logged - the recording is simply unwatermarked.
+/// Jobs run on a serialized queue (one FFmpeg session at a time). Failure
+/// policy (never lose the video): when a usable font is missing or the
+/// re-encode fails, the original saved file is left intact and a warning is
+/// logged - the recording is simply unwatermarked.
 library;
 
 import 'dart:io';
 
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:path/path.dart' as p;
 
-import 'ffmpeg_locator.dart';
 import 'logger.dart';
 
 /// Outcome of a watermark job.
-enum WatermarkOutcome { completed, skippedNoFfmpeg, skippedNoFont, failed }
+enum WatermarkOutcome { completed, skippedNoFont, failed }
 
 /// One saved recording to watermark.
 class WatermarkJob {
@@ -51,16 +53,39 @@ class WatermarkJob {
   final DateTime recordingStart;
 }
 
-/// Font candidates checked in order under the Windows fonts directory.
+/// Live queue state for the UI status indicator.
+class WatermarkQueueStatus {
+  const WatermarkQueueStatus({
+    required this.pendingCount,
+    required this.isProcessing,
+  });
+
+  final int pendingCount;
+  final bool isProcessing;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WatermarkQueueStatus &&
+      other.pendingCount == pendingCount &&
+      other.isProcessing == isProcessing;
+
+  @override
+  int get hashCode => Object.hash(pendingCount, isProcessing);
+}
+
+/// Font candidates checked in order under the Android system fonts
+/// directory. Roboto ships on every stock Android; the rest cover common
+/// OEM variations.
 const List<String> _fontCandidates = [
-  'arial.ttf',
-  'segoeui.ttf',
-  'calibri.ttf',
+  'Roboto-Regular.ttf',
+  'NotoSans-Regular.ttf',
+  'DroidSans.ttf',
+  'NotoSerif-Regular.ttf',
 ];
 
-/// Returns the first available Windows font file usable by drawtext, or
+/// Returns the first available system font file usable by drawtext, or
 /// null when none exists. [fontsDir] is overridable for tests.
-String? findWindowsFontFile({String fontsDir = r'C:\Windows\Fonts'}) {
+String? findSystemFontFile({String fontsDir = '/system/fonts'}) {
   for (final name in _fontCandidates) {
     final path = p.join(fontsDir, name);
     if (File(path).existsSync()) {
@@ -72,11 +97,9 @@ String? findWindowsFontFile({String fontsDir = r'C:\Windows\Fonts'}) {
 
 /// Escapes [text] for use inside a single-quoted drawtext `text='...'`
 /// value: backslashes are doubled, embedded single quotes close/reopen the
-/// quoted section, and `:`/`,` are backslash-escaped. The bundled FFmpeg
-/// (2026 git master) applies backslash escaping INSIDE single quotes at the
-/// filtergraph level and treats a bare `:` there as an option separator -
-/// verified empirically against ffmpeg-2026-07-09; quoting alone is NOT
-/// sufficient on this build.
+/// quoted section, and `:`/`,` are backslash-escaped (FFmpeg applies
+/// backslash escaping INSIDE single quotes at the filtergraph level and
+/// treats a bare `:` there as an option separator).
 String escapeDrawtextText(String text) {
   return text
       .replaceAll('\\', '\\\\')
@@ -88,8 +111,8 @@ String escapeDrawtextText(String text) {
 }
 
 /// Normalizes a font path for embedding in a filtergraph: forward slashes,
-/// drive colon escaped (quoted sections still require the colon escape on
-/// some ffmpeg builds, so escape defensively).
+/// any colon escaped (harmless on Android paths, required on Windows-style
+/// test paths).
 String _filterFontPath(String fontFile) {
   return fontFile.replaceAll('\\', '/').replaceAll(':', r'\:');
 }
@@ -112,8 +135,7 @@ String buildWatermarkFilter({
       ":text='%{pts\\:localtime\\:$startEpochSeconds}'"
       ':$common:boxcolor=black@0.7:x=10:y=10';
 
-  // Label top-right on the #667eea brand box (ecom-py's intended identity
-  // color - see key-decisions in the plan summary).
+  // Label top-right on the #667eea brand box.
   final labelText = escapeDrawtextText(label);
   final labelFilter =
       "drawtext=fontfile='$font':expansion=none"
@@ -130,23 +152,11 @@ String buildWatermarkFilter({
   return '$timestamp,$labelFilter,$barcodeFilter';
 }
 
-/// Builds the complete post-save -vf chain for a recording: an
-/// unconditional horizontal mirror flip, followed by an optional downscale
-/// to [targetHeight], followed by the three-part watermark.
-///
-/// The flip bakes in the same left-right mirroring shown in the live
-/// preview (see CameraService.buildPreview) so the saved file matches what
-/// the operator saw on screen. camera_windows has no native "record
-/// mirrored" option, so this always costs one re-encode pass - even when
-/// watermarking and compression are both disabled - which is why callers
-/// must call this unconditionally rather than gating it on those toggles.
-///
-/// The downscale exists because camera_windows opens its RECORD stream at
-/// the camera's maximum resolution regardless of ResolutionPreset (the
-/// preset caps only the preview - see capture_controller.cpp's
-/// FindBaseMediaTypesForSource), so a "4K" webcam always records 4K. The
-/// scale normalizes output to the configured resolution; min(h, ih) never
-/// upscales smaller sources.
+/// Builds the complete post-save -vf chain for a recording: an optional
+/// downscale to [targetHeight] (safety net in case the CameraX preset
+/// recorded above the configured resolution; min(h, ih) never upscales),
+/// followed by the three-part watermark. Returns an empty string when
+/// nothing applies (callers skip the encode entirely then).
 String buildRecordingPostFilter({
   required String barcode,
   required String label,
@@ -160,7 +170,7 @@ String buildRecordingPostFilter({
     parts.add('scale=-2:min($targetHeight\\,ih)');
   }
 
-  final font = fontFile ?? findWindowsFontFile();
+  final font = fontFile ?? findSystemFontFile();
   if (font != null && startTime != null) {
     parts.add(
       buildWatermarkFilter(
@@ -175,9 +185,10 @@ String buildRecordingPostFilter({
   return parts.join(',');
 }
 
-/// Builds the ffmpeg argument list (no shell involved - args are passed
-/// directly to the process). High-quality re-encode: the Phase-3
-/// compression pass owns the real size reduction.
+/// Builds the ffmpeg argument list for the watermark re-encode. veryfast +
+/// CRF 20 keeps quality high while staying light enough for phone CPUs;
+/// audio is absent from recordings (enableAudio: false) so no audio args
+/// are needed, but `-an` makes that explicit.
 List<String> buildFfmpegArgs({
   required String inputPath,
   required String outputPath,
@@ -197,28 +208,47 @@ List<String> buildFfmpegArgs({
     '-preset',
     'veryfast',
     '-crf',
-    '18',
-    '-c:a',
-    'copy',
+    '20',
+    '-an',
     outputPath,
   ];
+}
+
+/// Result of one FFmpeg invocation (seam for tests).
+class FfmpegRunResult {
+  const FfmpegRunResult(this.exitCode, [this.output = '']);
+
+  final int exitCode;
+  final String output;
+}
+
+/// Seam for executing FFmpeg (fake-able in tests). Defaults to an
+/// in-process ffmpeg_kit session.
+typedef FfmpegRunner = Future<FfmpegRunResult> Function(List<String> args);
+
+/// Default [FfmpegRunner]: runs the args through ffmpeg_kit and maps the
+/// session's return code (null = crashed session -> -1).
+Future<FfmpegRunResult> runFfmpegKit(List<String> args) async {
+  final session = await FFmpegKit.executeWithArguments(args);
+  final returnCode = await session.getReturnCode();
+  final logs = await session.getAllLogsAsString() ?? '';
+  if (ReturnCode.isSuccess(returnCode)) {
+    return FfmpegRunResult(0, logs);
+  }
+  return FfmpegRunResult(returnCode?.getValue() ?? -1, logs);
 }
 
 /// Serialized post-save watermark worker.
 class WatermarkService {
   WatermarkService(
     this._logger, {
-    Future<String?> Function()? findFfmpeg,
-    Future<ProcessResult> Function(String executable, List<String> args)?
-    runProcess,
+    FfmpegRunner? runFfmpeg,
     String? Function()? findFont,
-  }) : _findFfmpeg = findFfmpeg ?? FfmpegLocator.findFfmpeg,
-       _runProcess = runProcess ?? ((exe, args) => Process.run(exe, args)),
-       _findFont = findFont ?? findWindowsFontFile;
+  }) : _runFfmpeg = runFfmpeg ?? runFfmpegKit,
+       _findFont = findFont ?? findSystemFontFile;
 
   final Logger _logger;
-  final Future<String?> Function() _findFfmpeg;
-  final Future<ProcessResult> Function(String, List<String>) _runProcess;
+  final FfmpegRunner _runFfmpeg;
   final String? Function() _findFont;
 
   Future<void> _tail = Future<void>.value();
@@ -231,20 +261,29 @@ class WatermarkService {
   /// Whether a job is currently being processed.
   bool get isProcessing => _processing;
 
-  /// Invoked whenever the queue state changes (UI status hook).
-  void Function()? onQueueChanged;
+  /// Live queue state for the UI (status bar indicator).
+  final ValueNotifier<WatermarkQueueStatus> queueStatus =
+      ValueNotifier<WatermarkQueueStatus>(
+    const WatermarkQueueStatus(pendingCount: 0, isProcessing: false),
+  );
+
+  void _notifyStatus() {
+    queueStatus.value = WatermarkQueueStatus(
+      pendingCount: _pendingCount,
+      isProcessing: _processing,
+    );
+  }
 
   /// Enqueues [job] on the serialized worker. The returned Future completes
-  /// with the job's outcome once it has run (Phase-3 compression chains
-  /// here). Errors are captured into [WatermarkOutcome.failed] - the Future
-  /// never throws.
+  /// with the job's outcome once it has run. Errors are captured into
+  /// [WatermarkOutcome.failed] - the Future never throws.
   Future<WatermarkOutcome> enqueue(WatermarkJob job) {
     _pendingCount++;
-    onQueueChanged?.call();
+    _notifyStatus();
 
     final result = _tail.then((_) async {
       _processing = true;
-      onQueueChanged?.call();
+      _notifyStatus();
       try {
         return await _process(job);
       } catch (e) {
@@ -253,7 +292,7 @@ class WatermarkService {
       } finally {
         _processing = false;
         _pendingCount--;
-        onQueueChanged?.call();
+        _notifyStatus();
       }
     });
 
@@ -267,15 +306,6 @@ class WatermarkService {
     if (!input.existsSync()) {
       _logger.warning('Watermark skipped - file not found: ${job.videoPath}');
       return WatermarkOutcome.failed;
-    }
-
-    final ffmpegPath = await _findFfmpeg();
-    if (ffmpegPath == null) {
-      _logger.warning(
-        'FFmpeg not found - skipping watermark for '
-        '${p.basename(job.videoPath)} (video saved unwatermarked)',
-      );
-      return WatermarkOutcome.skippedNoFfmpeg;
     }
 
     final fontFile = _findFont();
@@ -301,8 +331,7 @@ class WatermarkService {
     final tmpFile = File(tmpPath);
 
     try {
-      final result = await _runProcess(
-        ffmpegPath,
+      final result = await _runFfmpeg(
         buildFfmpegArgs(
           inputPath: job.videoPath,
           outputPath: tmpPath,
@@ -315,7 +344,7 @@ class WatermarkService {
           tmpFile.lengthSync() == 0) {
         _logger.warning(
           'Watermark failed for ${p.basename(job.videoPath)} '
-          '(exit ${result.exitCode}): ${result.stderr} '
+          '(exit ${result.exitCode}): ${result.output} '
           '- keeping unwatermarked original',
         );
         _deleteQuietly(tmpFile);

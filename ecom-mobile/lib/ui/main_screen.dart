@@ -27,10 +27,9 @@ import '../core/database.dart';
 import '../core/disk_space.dart';
 import '../core/file_paths.dart';
 import '../core/scan_queue.dart';
-import '../core/video_compressor.dart';
 import '../core/watermark_service.dart';
 import '../models/transaction.dart';
-import 'compression_status_indicator.dart';
+import 'watermark_status_indicator.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
@@ -53,7 +52,7 @@ class MainScreen extends StatefulWidget {
     required this.barcodeHandler,
     required this.barcodeListener,
     required this.cameraScanner,
-    required this.compressor,
+    required this.watermarkService,
     required this.videoStoragePath,
     required this.minFreeSpaceGb,
     required this.config,
@@ -81,10 +80,9 @@ class MainScreen extends StatefulWidget {
   /// path as the USB wedge - full parity, including mid-recording.
   final CameraBarcodeScanner cameraScanner;
 
-  /// Serialized background FFmpeg worker (COMP-01). Each recording gets
-  /// ONE post-save job that burns the watermark (REC-06) and compresses in
-  /// a single encode.
-  final VideoCompressor compressor;
+  /// Serialized background FFmpeg worker. Each recording gets ONE post-save
+  /// job that burns the watermark (REC-06) - the only re-encode on mobile.
+  final WatermarkService watermarkService;
 
   /// Resolved videos root - used by the disk guard and Open File actions.
   final String videoStoragePath;
@@ -111,14 +109,16 @@ class _MainScreenState extends State<MainScreen> {
   String _selectedLabel = 'Normal (Standard)';
   List<Transaction> _recentTransactions = [];
 
-  /// Completed recordings still awaiting compression that have NOT been
-  /// queued this session (the operator-triggered backlog tracker).
-  int _pendingCompressionCount = 0;
+  /// Completed recordings still awaiting their post-save watermark pass
+  /// that have NOT been queued this session (the operator-triggered
+  /// backlog tracker; rows keep compression_status='pending' until the
+  /// pass runs).
+  int _pendingWatermarkCount = 0;
 
-  /// Transaction ids already handed to the compressor this session, by
-  /// either the post-save chain or the backlog button - prevents
+  /// Transaction ids already handed to the watermark worker this session,
+  /// by either the post-save chain or the backlog button - prevents
   /// double-queuing the same file.
-  final Set<int> _sessionQueuedCompressionIds = {};
+  final Set<int> _sessionQueuedWatermarkIds = {};
 
   String _statusBarText = 'Ready';
   Timer? _statusBarTimer;
@@ -150,9 +150,9 @@ class _MainScreenState extends State<MainScreen> {
     widget.cameraService.onCameraStateChanged = _onCameraStateChanged;
     widget.cameraService.onRecordingSalvaged = _onRecordingSalvaged;
 
-    // Refresh the recent list (compression glyphs, backlog count) whenever
-    // the compressor's queue state changes.
-    widget.compressor.queueStatus.addListener(_onCompressorQueueChanged);
+    // Refresh the recent list (status glyphs, backlog count) whenever the
+    // watermark worker's queue state changes.
+    widget.watermarkService.queueStatus.addListener(_onWatermarkQueueChanged);
 
     // 1s refresh: duration ticker + storage used (UI-01/DB-03).
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -196,7 +196,7 @@ class _MainScreenState extends State<MainScreen> {
     widget.cameraScanner.onBarcode = null;
     _ticker?.cancel();
     _statusBarTimer?.cancel();
-    widget.compressor.queueStatus.removeListener(_onCompressorQueueChanged);
+    widget.watermarkService.queueStatus.removeListener(_onWatermarkQueueChanged);
     _barcodeController.dispose();
     _focusNode.dispose();
     super.dispose();
@@ -210,7 +210,7 @@ class _MainScreenState extends State<MainScreen> {
     if (mounted) setState(() {});
   }
 
-  void _onCompressorQueueChanged() {
+  void _onWatermarkQueueChanged() {
     if (mounted) _refreshRecentTransactions();
   }
 
@@ -241,25 +241,27 @@ class _MainScreenState extends State<MainScreen> {
     if (!mounted) return;
     setState(() {
       _recentTransactions = recent;
-      _pendingCompressionCount = pending
-          .where((t) => !_sessionQueuedCompressionIds.contains(t.id))
+      _pendingWatermarkCount = pending
+          .where((t) => !_sessionQueuedWatermarkIds.contains(t.id))
           .length;
     });
   }
 
-  /// Backlog compression (operator-triggered): queues every completed
+  /// Backlog watermarking (operator-triggered): queues every completed
   /// recording still marked compression_status='pending' (e.g. recorded
-  /// while FFmpeg was missing or compression was disabled). Backlog jobs
-  /// get the same scale+watermark filter as fresh recordings - a pending
-  /// row has never been through the post-process pass, so it cannot be
-  /// double-watermarked. Rows already queued this session are skipped so
-  /// this button and the post-save chain can never double-queue a file.
-  Future<void> _compressPendingRecordings() async {
+  /// while watermarking was disabled or the app was killed mid-pass). A
+  /// pending row has never been through the post-process pass, so it
+  /// cannot be double-watermarked. Rows already queued this session are
+  /// skipped so this button and the post-save chain can never double-queue
+  /// a file. With watermarking disabled, pending rows are simply marked
+  /// done (no encode is needed on mobile - recordings are already at the
+  /// configured bitrate).
+  Future<void> _watermarkPendingRecordings() async {
     final pending = await widget.database.getPendingCompressions();
     var queued = 0;
     var missing = 0;
     for (final t in pending) {
-      if (_sessionQueuedCompressionIds.contains(t.id)) continue;
+      if (_sessionQueuedWatermarkIds.contains(t.id)) continue;
       final path = resolveVideoPath(
         widget.videoStoragePath,
         startTime: t.startTime,
@@ -270,31 +272,39 @@ class _MainScreenState extends State<MainScreen> {
         missing++;
         continue;
       }
-      final filter = buildRecordingPostFilter(
-        barcode: t.barcode,
-        label: t.label,
-        startTime: widget.config.watermarkEnabled
-            ? DateTime.tryParse(t.startTime)
-            : null,
-        targetHeight: widget.config.resolutionHeight,
-      );
-      _sessionQueuedCompressionIds.add(t.id);
-      await widget.compressor.queueCompression(
-        path,
-        t.id,
-        CompressionSettings.fromConfig(widget.config),
-        videoFilter: filter,
-      );
+      _sessionQueuedWatermarkIds.add(t.id);
+      final start = DateTime.tryParse(t.startTime);
+      if (widget.config.watermarkEnabled && start != null) {
+        unawaited(
+          widget.watermarkService
+              .enqueue(WatermarkJob(
+                videoPath: path,
+                barcode: t.barcode,
+                label: t.label,
+                recordingStart: start,
+              ))
+              .then((_) => _markPostProcessDone(t.id)),
+        );
+      } else {
+        await _markPostProcessDone(t.id);
+      }
       queued++;
     }
     if (!mounted) return;
     _setStatusBar(
       missing > 0
-          ? 'Queued $queued recording(s) for compression '
+          ? 'Queued $queued recording(s) for watermarking '
                 '($missing file(s) not found on disk)'
-          : 'Queued $queued recording(s) for compression',
+          : 'Queued $queued recording(s) for watermarking',
     );
     await _refreshRecentTransactions();
+  }
+
+  /// Marks a recording's post-save pass as done. 'skipped' keeps the
+  /// desktop DB schema semantics honest: no compression ran on mobile.
+  Future<void> _markPostProcessDone(int transactionId) async {
+    await widget.database.updateCompressionStatus(transactionId, 'skipped');
+    if (mounted) await _refreshRecentTransactions();
   }
 
   Future<void> _refreshStorageUsed() async {
@@ -516,41 +526,30 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  /// Fire-and-forget: queues the single post-save FFmpeg pass that mirrors
-  /// the recording (to match the live preview), downscales to the
-  /// configured resolution (the camera records at its max resolution
-  /// regardless of preset), burns the watermark, and compresses - all in
-  /// one encode (never delays the next scan).
-  ///
-  /// Settings semantics: the mirror flip always runs. Watermark off -> the
-  /// pass still flips+scales+compresses (no drawtext); watermark AND
-  /// compression both off -> the pass still runs just the mirror flip (and
-  /// scale, if configured) since there is no way to record mirrored
-  /// natively.
+  /// Fire-and-forget: queues the single post-save FFmpeg pass that burns
+  /// the watermark (never delays the next scan). Unlike the desktop app
+  /// there is no mirror flip (the rear camera records unmirrored) and no
+  /// compression pass (recordings are already hardware-encoded at the
+  /// configured bitrate) - with watermarking off, no encode runs at all
+  /// and the row is marked done immediately.
   void _enqueuePostProcess(StopRecordingResult stopResult, int? transactionId) {
     if (transactionId == null) return;
 
-    final watermarkOn = widget.config.watermarkEnabled;
-    final filter = buildRecordingPostFilter(
-      barcode: stopResult.barcode,
-      label: stopResult.label,
-      // Null start time drops the drawtext part, keeping flip+scale-only.
-      startTime: watermarkOn ? stopResult.startTime : null,
-      targetHeight: widget.config.resolutionHeight,
-    );
+    _sessionQueuedWatermarkIds.add(transactionId);
+    if (!widget.config.watermarkEnabled) {
+      unawaited(_markPostProcessDone(transactionId));
+      return;
+    }
 
-    _sessionQueuedCompressionIds.add(transactionId);
     unawaited(
-      widget.compressor
-          .queueCompression(
-            stopResult.videoPath,
-            transactionId,
-            CompressionSettings.fromConfig(widget.config),
-            videoFilter: filter,
-          )
-          .then((_) async {
-            if (mounted) await _refreshRecentTransactions();
-          }),
+      widget.watermarkService
+          .enqueue(WatermarkJob(
+            videoPath: stopResult.videoPath,
+            barcode: stopResult.barcode,
+            label: stopResult.label,
+            recordingStart: stopResult.startTime,
+          ))
+          .then((_) => _markPostProcessDone(transactionId)),
     );
   }
 
@@ -883,9 +882,8 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   /// System Status panel (UI-01): recording state, current filename, MM:SS
-  /// duration, storage used (DB-03), and the live watermark+compression
-  /// queue (COMP-05, via [CompressionStatusIndicator] - one FFmpeg pass
-  /// does both).
+  /// duration, storage used (DB-03), and the live watermark queue (via
+  /// [WatermarkStatusIndicator]).
   Widget _buildStatusPanel() {
     final isRecording = widget.cameraService.isRecording;
     final filename = widget.cameraService.currentFilename ?? '-';
@@ -917,24 +915,26 @@ class _MainScreenState extends State<MainScreen> {
               '${_storageUsedMb.toStringAsFixed(2)} MB',
             ),
             const SizedBox(height: 4),
-            CompressionStatusIndicator(compressor: widget.compressor),
-            // Backlog tracker: older recordings whose compression never ran
-            // (FFmpeg missing at the time, compression disabled, ...).
-            if (_pendingCompressionCount > 0) ...[
+            WatermarkStatusIndicator(
+              watermarkService: widget.watermarkService,
+            ),
+            // Backlog tracker: older recordings whose post-save watermark
+            // pass never ran (app killed mid-pass, watermark disabled, ...).
+            if (_pendingWatermarkCount > 0) ...[
               const SizedBox(height: 4),
               Row(
                 children: [
                   Expanded(
                     child: Text(
-                      '$_pendingCompressionCount recording(s) not compressed',
+                      '$_pendingWatermarkCount recording(s) not watermarked',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Colors.orange.shade800,
                       ),
                     ),
                   ),
                   TextButton(
-                    onPressed: _compressPendingRecordings,
-                    child: const Text('Compress All'),
+                    onPressed: _watermarkPendingRecordings,
+                    child: const Text('Watermark All'),
                   ),
                 ],
               ),
@@ -962,6 +962,9 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
+  /// Post-save status glyph. Mobile rows normally land on 'skipped' (no
+  /// compression runs here); 'completed' appears only on rows imported
+  /// from a desktop archive.
   String _compressionGlyph(Transaction t) {
     switch (t.compressionStatus) {
       case 'completed':
@@ -969,11 +972,11 @@ class _MainScreenState extends State<MainScreen> {
             ? 'compressed ${t.compressionRatio!.toStringAsFixed(1)}%'
             : 'compressed';
       case 'processing':
-        return 'compressing...';
+        return 'processing...';
       case 'failed':
         return 'failed';
       case 'skipped':
-        return 'skipped';
+        return 'saved';
       default:
         return 'pending';
     }

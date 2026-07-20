@@ -43,7 +43,7 @@ dependencies:
   permission_handler: ^12.0.0
   # In-process FFmpeg for the watermark pass (maintained fork of the
   # discontinued ffmpeg_kit_flutter).
-  ffmpeg_kit_flutter_new: ^3.2.0
+  ffmpeg_kit_flutter_new: ^4.5.1
   # Publishes saved videos into the public MediaStore Movies collection.
   media_store_plus: ^0.1.3
   # Open/share saved recordings from the search screen.

@@ -129,8 +129,8 @@ void main() {
       (tester) async {
     await pumpSettings(tester);
 
-    // Toggle watermark off on the Compression tab.
-    await tester.tap(find.text('Compression'));
+    // Toggle watermark off on the Watermark tab.
+    await tester.tap(find.text('Watermark'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Burn watermark into videos'));
     await tester.pump();
@@ -175,7 +175,6 @@ void main() {
     expect(video['resolution_height'], 720);
     expect(video['fps'], 30);
     expect(video['recording_bitrate_kbps'], 4000);
-    expect((saved['compression'] as Map)['preset'], 'veryfast');
 
     // Bitrate changed from the 6000 default -> capture-affecting -> reinit
     // with the preset's bitrate.
