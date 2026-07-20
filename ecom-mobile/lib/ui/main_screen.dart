@@ -12,7 +12,6 @@
 library;
 
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -27,6 +26,7 @@ import '../core/database.dart';
 import '../core/disk_space.dart';
 import '../core/file_paths.dart';
 import '../core/scan_queue.dart';
+import '../core/video_actions.dart';
 import '../core/watermark_service.dart';
 import '../models/transaction.dart';
 import 'watermark_status_indicator.dart';
@@ -599,10 +599,11 @@ class _MainScreenState extends State<MainScreen> {
       );
       return;
     }
-    await Process.start('explorer.exe', [path]);
+    final error = await openVideo(path);
+    if (error != null) await _showErrorDialog('Error', error);
   }
 
-  Future<void> _showRecordingInFolder(Transaction t) async {
+  Future<void> _shareRecordingFile(Transaction t) async {
     final path = _resolveTransactionPath(t);
     if (path == null) {
       await _showErrorDialog(
@@ -611,7 +612,8 @@ class _MainScreenState extends State<MainScreen> {
       );
       return;
     }
-    await Process.start('explorer.exe', ['/select,', path]);
+    final error = await shareVideo(path);
+    if (error != null) await _showErrorDialog('Error', error);
   }
 
   // ---------------------------------------------------------------------
@@ -1030,9 +1032,9 @@ class _MainScreenState extends State<MainScreen> {
                                 onPressed: () => _openRecordingFile(t),
                               ),
                               IconButton(
-                                icon: const Icon(Icons.folder_open),
-                                tooltip: 'Show in Folder',
-                                onPressed: () => _showRecordingInFolder(t),
+                                icon: const Icon(Icons.share),
+                                tooltip: 'Share',
+                                onPressed: () => _shareRecordingFile(t),
                               ),
                             ],
                           ),
@@ -1088,27 +1090,55 @@ class _MainScreenState extends State<MainScreen> {
           ),
         ],
       ),
+      // Scanner-first workflow: barcodes arrive from a Bluetooth HID gun or
+      // the camera scan, so the soft keyboard is rare - keep the layout
+      // stable instead of resizing under it.
+      resizeToAvoidBottomInset: false,
       body: Padding(
         padding: const EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: _buildPreviewArea()),
-            const SizedBox(width: 12),
-            SizedBox(
-              width: 380,
-              child: Column(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Wide (landscape/tablet/desktop): preview beside the controls.
+            if (constraints.maxWidth >= 900) {
+              return Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildControlCard(),
-                  const SizedBox(height: 8),
-                  _buildStatusPanel(),
-                  const SizedBox(height: 8),
-                  Expanded(child: _buildRecentRecordings()),
+                  Expanded(child: _buildPreviewArea()),
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    width: 380,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildControlCard(),
+                        const SizedBox(height: 8),
+                        _buildStatusPanel(),
+                        const SizedBox(height: 8),
+                        Expanded(child: _buildRecentRecordings()),
+                      ],
+                    ),
+                  ),
                 ],
-              ),
-            ),
-          ],
+              );
+            }
+            // Portrait phone: preview on top, controls stacked below,
+            // recent recordings take the remaining height.
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  height: constraints.maxHeight * 0.35,
+                  child: _buildPreviewArea(),
+                ),
+                const SizedBox(height: 8),
+                _buildControlCard(),
+                const SizedBox(height: 8),
+                _buildStatusPanel(),
+                const SizedBox(height: 8),
+                Expanded(child: _buildRecentRecordings()),
+              ],
+            );
+          },
         ),
       ),
       bottomNavigationBar: _buildStatusBar(),

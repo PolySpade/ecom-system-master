@@ -205,13 +205,13 @@ class _SearchScreenState extends State<SearchScreen> {
     if (error != null) await _showError(error);
   }
 
-  Future<void> _revealVideo(Transaction t) async {
+  Future<void> _shareVideo(Transaction t) async {
     final path = _resolvePath(t);
     if (path == null) {
       await _showError('Video file not found:\n${t.videoFilename}');
       return;
     }
-    final error = await showInFolder(path);
+    final error = await shareVideo(path);
     if (error != null) await _showError(error);
   }
 
@@ -411,9 +411,9 @@ class _SearchScreenState extends State<SearchScreen> {
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: () => _revealVideo(t),
-                  icon: const Icon(Icons.folder_open, size: 18),
-                  label: const Text('Show in Folder'),
+                  onPressed: () => _shareVideo(t),
+                  icon: const Icon(Icons.share, size: 18),
+                  label: const Text('Share'),
                 ),
               ],
             ),

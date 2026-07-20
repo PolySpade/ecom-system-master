@@ -65,10 +65,12 @@ void main() {
   test('loadFrom resolves relative storage paths against baseDir', () {
     final config = Config.loadFrom(tempDir.path);
 
-    expect(config.videoStoragePath, p.normalize(p.join(tempDir.path, 'videos')));
+    // video_path defaults to the absolute Movies collection path; the
+    // relative database/log defaults resolve against baseDir.
     expect(
       config.databasePath,
       p.normalize(p.join(tempDir.path, 'database.db')),
     );
+    expect(config.logPath, p.normalize(p.join(tempDir.path, 'logs')));
   });
 }

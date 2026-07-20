@@ -7,6 +7,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -19,6 +20,7 @@ import 'core/config.dart';
 import 'core/database.dart';
 import 'core/logger.dart';
 import 'core/startup_cleanup.dart';
+import 'core/storage_root.dart';
 import 'core/watermark_service.dart';
 import 'ui/main_screen.dart';
 
@@ -43,17 +45,26 @@ Future<void> main() async {
   final logger = Logger('ecom_flutter', '${config.logPath}/app.log');
   logger.info('Application starting');
 
+  // Prefer the configured public Movies root; fall back to the app-private
+  // videos dir when it is not writable on this device.
+  final videoRoot = await resolveWritableVideoRoot(
+    config.videoStoragePath,
+    '${config.baseDir}${Platform.pathSeparator}videos',
+    logger,
+  );
+  logger.info('Video root: $videoRoot');
+
   final database = await AppDatabase.open(config.databasePath, logger);
   // Jobs killed mid-flight (app closed during FFmpeg) return to the
   // watermark backlog; their partial temp files are junk - remove them.
   await database.resetStuckProcessing();
   await cleanStaleTempFiles(
-    config.videoStoragePath,
+    videoRoot,
     deleteOriginalMode: false,
     logger: logger,
   );
 
-  final cameraService = CameraService(config.videoStoragePath, logger);
+  final cameraService = CameraService(videoRoot, logger);
   try {
     await cameraService.init(
       config.cameraIndex,
@@ -107,7 +118,7 @@ Future<void> main() async {
       barcodeListener: barcodeListener,
       cameraScanner: cameraScanner,
       watermarkService: watermarkService,
-      videoStoragePath: config.videoStoragePath,
+      videoStoragePath: videoRoot,
       minFreeSpaceGb: config.minFreeSpaceGb,
       config: config,
     ),

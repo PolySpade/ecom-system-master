@@ -34,7 +34,10 @@ void main() {
       expect(sm.getCameraExposure(), -4);
       expect(sm.getCameraGain(), 0);
       expect(sm.getCameraBrightness(), 128);
-      expect(sm.getVideoStoragePath(), 'videos');
+      expect(
+        sm.getVideoStoragePath(),
+        p.normalize('/storage/emulated/0/Movies/EcomTracker'),
+      );
       expect(sm.getDatabasePath(), 'database.db');
       expect(sm.getLogPath(), 'logs');
       // Compression category present for ecom-py settings.json parity.
@@ -57,7 +60,10 @@ void main() {
       expect(sm.getVideoResolution(), (1280, 720));
       expect(sm.getCameraBrightness(), 128);
       // Untouched categories keep full defaults.
-      expect(sm.getVideoStoragePath(), 'videos');
+      expect(
+        sm.getVideoStoragePath(),
+        p.normalize('/storage/emulated/0/Movies/EcomTracker'),
+      );
       expect(sm.get('compression', 'preset'), 'medium');
     });
 
@@ -181,6 +187,11 @@ void main() {
 
   group('Config delegation', () {
     test('resolves relative storage paths against baseDir', () {
+      // video_path defaults to an absolute Movies path on mobile, so pin a
+      // relative value to exercise the relative-resolution branch.
+      File(settingsPath).writeAsStringSync(jsonEncode({
+        'storage': {'video_path': 'videos'},
+      }));
       final sm = SettingsManager(settingsPath);
       final config = Config(tempDir.path, sm);
 

@@ -50,7 +50,10 @@ class SettingsManager {
       'brightness': 128,
     },
     'storage': {
-      'video_path': 'videos',
+      // Public Movies collection: gallery-visible, USB-copyable, survives
+      // app uninstall. main.dart write-probes this at startup and falls
+      // back to the app-private 'videos' dir when it isn't writable.
+      'video_path': '/storage/emulated/0/Movies/EcomTracker',
       'database_path': 'database.db',
       'log_path': 'logs',
       // Free-space floor (GB) checked before each recording start (STO-02).
