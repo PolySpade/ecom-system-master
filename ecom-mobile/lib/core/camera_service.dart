@@ -16,6 +16,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
@@ -223,6 +224,28 @@ class CameraService {
     // A settings-driven reinitialize() goes through dispose(); clear the
     // flag so the health monitor resumes watching the new controller.
     _disposed = false;
+
+    // Makes the plugin's own rotation bookkeeping (CameraValue.
+    // recordingOrientation/deviceOrientation) deterministic instead of
+    // depending on a live device-orientation sensor read, since the app is
+    // portrait-only anyway (main.dart's SystemChrome.setPreferredOrientations).
+    // NOTE: this does NOT fix the known bug where the preview renders the
+    // feed rotated ~90° while actively recording on at least one device
+    // (Samsung Galaxy Z Fold, camera_android_camerax 0.7.4+1) - confirmed
+    // via diagnostic investigation that the plugin's own rotation-decision
+    // value is correct (recordingOrientation=portraitUp, i.e. "apply no
+    // rotation") for the entire recording where the feed still rendered
+    // rotated, and that even the plugin's completely unmodified CameraPreview
+    // widget (no customization from this app) reproduces it - the bug is in
+    // the plugin's native texture rendering, not fixable from Flutter-side
+    // widget code. Kept anyway since it's a correctness improvement on its
+    // own merits and doesn't regress anything.
+    try {
+      await controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
+    } catch (e) {
+      _logger.warning('Could not lock capture orientation: $e');
+    }
+
     onCameraStateChanged?.call();
   }
 

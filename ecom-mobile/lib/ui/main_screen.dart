@@ -1,14 +1,16 @@
-/// Main Screen - preview + Video Label selection + barcode entry + Stop
-/// button + live status panel + recent-recordings list + status bar.
+/// Main Screen - full-screen camera preview with a toggleable floating
+/// control panel (Video Label selection + barcode entry + Stop/Scan
+/// buttons + condensed status) over it.
 ///
 /// Ports the main-window orchestration from ecom-py/app_gui.py: the
 /// stop-then-start sequential ordering for stopAndStart (via a serialized
 /// ScanQueue so scans arriving during a save are queued, REC-04), the
 /// non-dismissible "Saving Recording..." dialog, label routing (REC-06),
-/// the disk-space guard before recording start (STO-02), the System Status
-/// panel with a 1s refresh (UI-01/DB-03), the last-10 recordings list with
-/// Open File / Show in Folder (UI-02/STO-03), the 5s auto-clearing status
-/// bar (UI-03), and the exit confirmation that stops-and-saves (REC-07).
+/// the disk-space guard before recording start (STO-02), a condensed
+/// System Status readout with a 1s refresh (UI-01/DB-03), and the 5s
+/// auto-clearing status toast (UI-03). Unlike the desktop app, the
+/// recordings list lives only in the Search screen - the main screen is
+/// the camera feed.
 library;
 
 import 'dart:async';
@@ -26,9 +28,7 @@ import '../core/database.dart';
 import '../core/disk_space.dart';
 import '../core/file_paths.dart';
 import '../core/scan_queue.dart';
-import '../core/video_actions.dart';
 import '../core/watermark_service.dart';
-import '../models/transaction.dart';
 import 'watermark_status_indicator.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
@@ -107,7 +107,11 @@ class _MainScreenState extends State<MainScreen> {
 
   int? _currentTransactionId;
   String _selectedLabel = 'Normal (Standard)';
-  List<Transaction> _recentTransactions = [];
+
+  /// Whether the floating control panel is shown over the camera feed.
+  /// Toggled by the FAB in [_buildControlsToggle] so the operator can get
+  /// an unobstructed view of the full-screen preview on demand.
+  bool _controlsExpanded = true;
 
   /// Completed recordings still awaiting their post-save watermark pass
   /// that have NOT been queued this session (the operator-triggered
@@ -131,7 +135,7 @@ class _MainScreenState extends State<MainScreen> {
   void initState() {
     super.initState();
     _scanQueue = ScanQueue(_processBarcodeInput);
-    _refreshRecentTransactions();
+    _refreshWatermarkBacklog();
 
     // Route scanner-sourced barcodes into the SAME processBarcode path
     // manual entry uses (BAR-02) - no duplicated orchestration.
@@ -211,7 +215,7 @@ class _MainScreenState extends State<MainScreen> {
   }
 
   void _onWatermarkQueueChanged() {
-    if (mounted) _refreshRecentTransactions();
+    if (mounted) _refreshWatermarkBacklog();
   }
 
   Future<void> _onRecordingSalvaged(StopRecordingResult result) async {
@@ -228,19 +232,17 @@ class _MainScreenState extends State<MainScreen> {
     _enqueuePostProcess(result, transactionId);
     if (!mounted) return;
     _setStatusBar('Camera failure - recording saved (${result.duration}s)');
-    await _refreshRecentTransactions();
+    await _refreshWatermarkBacklog();
   }
 
   // ---------------------------------------------------------------------
   // Data refresh
   // ---------------------------------------------------------------------
 
-  Future<void> _refreshRecentTransactions() async {
-    final recent = await widget.database.getRecentTransactions(limit: 10);
+  Future<void> _refreshWatermarkBacklog() async {
     final pending = await widget.database.getPendingCompressions();
     if (!mounted) return;
     setState(() {
-      _recentTransactions = recent;
       _pendingWatermarkCount = pending
           .where((t) => !_sessionQueuedWatermarkIds.contains(t.id))
           .length;
@@ -297,14 +299,14 @@ class _MainScreenState extends State<MainScreen> {
                 '($missing file(s) not found on disk)'
           : 'Queued $queued recording(s) for watermarking',
     );
-    await _refreshRecentTransactions();
+    await _refreshWatermarkBacklog();
   }
 
   /// Marks a recording's post-save pass as done. 'skipped' keeps the
   /// desktop DB schema semantics honest: no compression ran on mobile.
   Future<void> _markPostProcessDone(int transactionId) async {
     await widget.database.updateCompressionStatus(transactionId, 'skipped');
-    if (mounted) await _refreshRecentTransactions();
+    if (mounted) await _refreshWatermarkBacklog();
   }
 
   Future<void> _refreshStorageUsed() async {
@@ -425,10 +427,15 @@ class _MainScreenState extends State<MainScreen> {
 
   /// Submits the barcode field through the serialized [ScanQueue]: a scan
   /// arriving while a save is in progress is queued, not dropped (REC-04).
+  ///
+  /// Deliberately does NOT refocus the barcode field afterwards - the
+  /// wedge scanner feeds barcodes via [GlobalBarcodeListener]'s top-level
+  /// hardware-key handler, which works regardless of Flutter focus, so
+  /// refocusing here would only pop the soft keyboard open again after
+  /// every single scan.
   void _submitBarcode() {
     final raw = _barcodeController.text;
     _barcodeController.clear();
-    _focusNode.requestFocus();
 
     if (raw.trim().isEmpty) {
       _showErrorDialog('Input Required', 'Please enter a barcode');
@@ -493,7 +500,7 @@ class _MainScreenState extends State<MainScreen> {
         );
       }
 
-      await _refreshRecentTransactions();
+      await _refreshWatermarkBacklog();
       if (mounted) setState(() {});
     } catch (e) {
       await _showErrorDialog('Error', 'Failed to process barcode: $e');
@@ -569,51 +576,12 @@ class _MainScreenState extends State<MainScreen> {
           'Recording stopped: ${stopResult.duration}s, '
           '${stopResult.fileSizeMb.toStringAsFixed(2)}MB',
         );
-        await _refreshRecentTransactions();
+        await _refreshWatermarkBacklog();
         if (mounted) setState(() {});
       } catch (e) {
         await _showErrorDialog('Error', 'Failed to stop recording: $e');
       }
     });
-  }
-
-  // ---------------------------------------------------------------------
-  // Recording file actions (STO-03)
-  // ---------------------------------------------------------------------
-
-  String? _resolveTransactionPath(Transaction t) {
-    return resolveVideoPath(
-      widget.videoStoragePath,
-      startTime: t.startTime,
-      label: t.label,
-      videoFilename: t.videoFilename,
-    );
-  }
-
-  Future<void> _openRecordingFile(Transaction t) async {
-    final path = _resolveTransactionPath(t);
-    if (path == null) {
-      await _showErrorDialog(
-        'Error',
-        'Video file not found:\n${t.videoFilename}',
-      );
-      return;
-    }
-    final error = await openVideo(path);
-    if (error != null) await _showErrorDialog('Error', error);
-  }
-
-  Future<void> _shareRecordingFile(Transaction t) async {
-    final path = _resolveTransactionPath(t);
-    if (path == null) {
-      await _showErrorDialog(
-        'Error',
-        'Video file not found:\n${t.videoFilename}',
-      );
-      return;
-    }
-    final error = await shareVideo(path);
-    if (error != null) await _showErrorDialog('Error', error);
   }
 
   // ---------------------------------------------------------------------
@@ -632,34 +600,46 @@ class _MainScreenState extends State<MainScreen> {
     final label = widget.cameraService.currentLabel ?? '';
 
     return Positioned(
-      top: 8,
+      // Sits below the floating top bar (title + Search/Settings), which
+      // occupies this same top-right corner - stacking on top of it would
+      // otherwise visually collide with this chip during recording.
+      top: MediaQuery.paddingOf(context).top + 64,
       right: 8,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.red,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 8,
-              height: 8,
-              margin: const EdgeInsets.only(right: 6),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
+      child: ConstrainedBox(
+        // Capped so a long filename/label can't stretch this into a wide
+        // block across the top of the feed - it ellipsizes instead.
+        constraints: const BoxConstraints(maxWidth: 260),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.red,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.only(right: 6),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                ),
               ),
-            ),
-            Text(
-              'RECORDING: $filename [$label]',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
+              Flexible(
+                child: Text(
+                  'RECORDING: $filename [$label]',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -682,8 +662,13 @@ class _MainScreenState extends State<MainScreen> {
   void _openSearch() {
     _openChildScreen(
       SearchScreen(
+        // The RESOLVED root recordings are actually written to (may have
+        // fallen back to app-private storage, see storage_root.dart) - not
+        // widget.config.videoStoragePath, the originally configured path,
+        // which is where Search would otherwise look for files that were
+        // actually saved elsewhere.
         database: widget.database,
-        videoStoragePath: widget.config.videoStoragePath,
+        videoStoragePath: widget.videoStoragePath,
       ),
     );
   }
@@ -698,13 +683,17 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  /// Preview area (CAM-01/CAM-02): scales continuously with window resizes
-  /// while preserving the camera's aspect ratio. Shows a reconnecting
-  /// placeholder while the camera is unavailable (CAM-04).
+  /// Full-screen camera feed (CAM-01/CAM-02): fills the entire available
+  /// space, cropping (never distorting) the feed to cover it - the camera
+  /// plugin only exposes a "contain" box (an [AspectRatio]-sized child), so
+  /// an oversized child sized to the correct aspect ratio is clipped via
+  /// [OverflowBox] to get "cover" behavior instead of letterboxing or
+  /// stretching. Shows a reconnecting placeholder while the camera is
+  /// unavailable (CAM-04).
   Widget _buildPreviewArea() {
     if (!widget.cameraService.isCameraHealthy) {
-      return Container(
-        color: Colors.black87,
+      return ColoredBox(
+        color: Colors.black,
         child: const Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -721,155 +710,156 @@ class _MainScreenState extends State<MainScreen> {
       );
     }
 
-    final overlay = _buildRecordingOverlay();
+    // The camera plugin reports width/height in the sensor's native
+    // (landscape) orientation regardless of how the phone is held, so it
+    // must be inverted for this portrait-locked app or the box is sized
+    // wrong. (The camera_android_camerax/CameraX implementation had a
+    // native bug where the live preview rendered rotated specifically while
+    // actively recording - matching upstream flutter/flutter#163857 - fixed
+    // by switching to the legacy Camera2-based camera_android
+    // implementation in pubspec.yaml; see CameraService.init's
+    // lockCaptureOrientation call for the still-relevant orientation-
+    // determinism piece of that investigation.)
+    final rawAspectRatio = widget.cameraService.aspectRatio;
+    final previewAspectRatio = rawAspectRatio > 1
+        ? 1 / rawAspectRatio
+        : rawAspectRatio;
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return Stack(
-          children: [
-            Center(
-              child: AspectRatio(
-                aspectRatio: widget.cameraService.aspectRatio,
+    return ColoredBox(
+      color: Colors.black,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = constraints.biggest;
+          final screenAspectRatio = size.width / size.height;
+          // Whichever dimension the preview is "narrower" on relative to
+          // the screen is stretched to fill it; the other overflows and is
+          // clipped below - cropping the feed instead of squishing it.
+          final matchWidth = screenAspectRatio > previewAspectRatio;
+          final childWidth = matchWidth
+              ? size.width
+              : size.height * previewAspectRatio;
+          final childHeight = matchWidth
+              ? size.width / previewAspectRatio
+              : size.height;
+
+          return ClipRect(
+            child: OverflowBox(
+              maxWidth: childWidth,
+              maxHeight: childHeight,
+              child: SizedBox(
+                width: childWidth,
+                height: childHeight,
                 child: widget.cameraService.buildPreview(),
               ),
             ),
-            ?overlay,
-          ],
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildControlCard() {
-    final isRecording = widget.cameraService.isRecording;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+  /// Floating top bar (title + Search/Settings) over a dark scrim so the
+  /// icons stay legible against a bright feed - there is no opaque AppBar
+  /// in the whole-screen-preview design to anchor them to.
+  Widget _buildTopBar() {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Container(
+        padding: EdgeInsets.fromLTRB(
+          12,
+          MediaQuery.paddingOf(context).top + 8,
+          12,
+          32,
+        ),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.black54, Colors.transparent],
+          ),
+        ),
+        child: Row(
           children: [
-            Text('Video Label:', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 4),
-            DropdownButtonFormField<String>(
-              initialValue: _selectedLabel,
-              isDense: true,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                contentPadding: EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
+            const Expanded(
+              child: Text(
+                'Ecom Video Tracker',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
                 ),
+                overflow: TextOverflow.ellipsis,
               ),
-              items: _kLabelOptions
-                  .map(
-                    (label) =>
-                        DropdownMenuItem(value: label, child: Text(label)),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                if (value != null) setState(() => _selectedLabel = value);
-              },
             ),
-            const SizedBox(height: 12),
-            Text(
-              'Scan or Enter Barcode:',
-              style: Theme.of(context).textTheme.labelLarge,
-            ),
-            const SizedBox(height: 4),
-            TextField(
-              controller: _barcodeController,
-              focusNode: _focusNode,
-              autofocus: true,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                isDense: true,
-                hintText: 'Barcode',
-              ),
-              onSubmitted: (_) => _submitBarcode(),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Scan continuously: each barcode stops the previous '
-              'recording and starts a new one.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                  child: FilledButton(
-                    onPressed: _submitBarcode,
-                    child: const Text('Submit Barcode'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: _kDangerColor,
-                      foregroundColor: Colors.white,
-                    ),
-                    onPressed: isRecording ? _manualStop : null,
-                    child: const Text('Stop Recording'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            // Camera scan (button-armed): shows a countdown while the scan
-            // window is open. F2 is the keyboard equivalent.
-            ValueListenableBuilder<CameraScanState>(
-              valueListenable: widget.cameraScanner.state,
-              builder: (context, scan, _) {
-                return FilledButton.tonalIcon(
-                  icon: Icon(
-                    scan.armed ? Icons.stop_circle : Icons.photo_camera,
-                  ),
-                  // Toggle between stop and start
-                  onPressed: scan.armed ? _disarmCameraScan : _armCameraScan,
-                  // Make it look like a cancel button when active
-                  style: scan.armed
-                      ? FilledButton.styleFrom(
-                          backgroundColor: _kDangerColor.withValues(alpha: 0.1),
-                          foregroundColor: _kDangerColor,
-                        )
-                      : null,
-                  label: Text(
-                    scan.armed
-                        ? 'Scanning... (Cancel)'
-                        : 'Scan with Camera (F2)',
-                  ),
-                );
-              },
-            ),
+            _overlayIconButton(Icons.search, 'Search Recordings', _openSearch),
+            const SizedBox(width: 4),
+            _overlayIconButton(Icons.settings, 'Settings', _openSettings),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildStatusRow(String title, String value, {Color? valueColor}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 110,
-            child: Text(
-              title,
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
+  Widget _overlayIconButton(
+    IconData icon,
+    String tooltip,
+    VoidCallback onPressed,
+  ) {
+    return Material(
+      color: Colors.black38,
+      shape: const CircleBorder(),
+      child: IconButton(
+        icon: Icon(icon, color: Colors.white),
+        tooltip: tooltip,
+        onPressed: onPressed,
+      ),
+    );
+  }
+
+  /// Transient status toast (UI-03): floats over the feed and auto-clears
+  /// via [_setStatusBar]'s existing 5s timer - there is no fixed bottom bar
+  /// left to anchor it to in the whole-screen-preview design.
+  Widget? _buildStatusToast() {
+    if (_statusBarText == 'Ready') return null;
+    return Positioned(
+      top: MediaQuery.paddingOf(context).top + 56,
+      left: 12,
+      right: 12,
+      child: Material(
+        color: Colors.black87,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Text(
+            _statusBarText,
+            style: const TextStyle(color: Colors.white),
+            overflow: TextOverflow.ellipsis,
           ),
-          Expanded(
-            child: Text(
-              value,
-              style: TextStyle(color: valueColor),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  /// FAB that shows/hides [_buildControlPanel], so the operator can get an
+  /// unobstructed view of the full-screen feed on demand.
+  Widget _buildControlsToggle() {
+    return Positioned(
+      right: 16,
+      // Rises above the soft keyboard (viewInsets.bottom) instead of being
+      // covered by it - the Scaffold itself doesn't resize
+      // (resizeToAvoidBottomInset: false keeps the feed full-screen), so
+      // only this floating overlay needs to react to the keyboard.
+      bottom:
+          16 +
+          MediaQuery.paddingOf(context).bottom +
+          MediaQuery.viewInsetsOf(context).bottom,
+      child: FloatingActionButton(
+        heroTag: 'controlsToggle',
+        tooltip: _controlsExpanded ? 'Hide controls' : 'Show controls',
+        onPressed: () => setState(() => _controlsExpanded = !_controlsExpanded),
+        child: Icon(_controlsExpanded ? Icons.expand_more : Icons.tune),
       ),
     );
   }
@@ -883,265 +873,238 @@ class _MainScreenState extends State<MainScreen> {
     return '$mins:$secs';
   }
 
-  /// System Status panel (UI-01): recording state, current filename, MM:SS
-  /// duration, storage used (DB-03), and the live watermark queue (via
-  /// [WatermarkStatusIndicator]).
-  Widget _buildStatusPanel() {
+  /// Floating control panel: Video Label + barcode entry + Stop/Scan
+  /// buttons, plus a condensed status line (recording state, MM:SS
+  /// duration, storage used (DB-03), and the live watermark queue via
+  /// [WatermarkStatusIndicator]) - the recording overlay on the preview
+  /// already shows the filename/label, so this only adds duration/storage.
+  /// Toggled by [_buildControlsToggle].
+  Widget _buildControlPanel() {
     final isRecording = widget.cameraService.isRecording;
-    final filename = widget.cameraService.currentFilename ?? '-';
+    final filename = widget.cameraService.currentFilename;
+    final scheme = Theme.of(context).colorScheme;
 
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'System Status',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 6),
-            _buildStatusRow(
-              'Status:',
-              isRecording ? 'Recording' : 'Idle',
-              valueColor: isRecording ? _kDangerColor : null,
-            ),
-            _buildStatusRow(
-              'Current File:',
-              isRecording ? filename : '-',
-              valueColor: isRecording ? _kDangerColor : null,
-            ),
-            _buildStatusRow('Duration:', _formatDuration()),
-            _buildStatusRow(
-              'Storage Used:',
-              '${_storageUsedMb.toStringAsFixed(2)} MB',
-            ),
-            const SizedBox(height: 4),
-            WatermarkStatusIndicator(
-              watermarkService: widget.watermarkService,
-            ),
-            // Backlog tracker: older recordings whose post-save watermark
-            // pass never ran (app killed mid-pass, watermark disabled, ...).
-            if (_pendingWatermarkCount > 0) ...[
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '$_pendingWatermarkCount recording(s) not watermarked',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.orange.shade800,
+    return Positioned(
+      left: 0,
+      right: 0,
+      // Rises above the soft keyboard instead of being covered by it - see
+      // the matching comment on _buildControlsToggle.
+      bottom: MediaQuery.viewInsetsOf(context).bottom,
+      child: SafeArea(
+        top: false,
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          decoration: BoxDecoration(
+            color: scheme.surface.withValues(alpha: 0.95),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black38,
+                blurRadius: 16,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Collapse handle - tapping it hides the panel, same as
+                // the toggle FAB.
+                Center(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => setState(() => _controlsExpanded = false),
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      margin: const EdgeInsets.symmetric(vertical: 8),
+                      decoration: BoxDecoration(
+                        color: scheme.outlineVariant,
+                        borderRadius: BorderRadius.circular(2),
                       ),
                     ),
                   ),
-                  TextButton(
-                    onPressed: _watermarkPendingRecordings,
-                    child: const Text('Watermark All'),
+                ),
+                Row(
+                  children: [
+                    Icon(
+                      isRecording
+                          ? Icons.fiber_manual_record
+                          : Icons.check_circle,
+                      size: 14,
+                      color: isRecording ? _kDangerColor : _kSuccessColor,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        isRecording
+                            ? '${filename ?? 'Recording'} · ${_formatDuration()}'
+                            : 'Idle',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: isRecording ? _kDangerColor : null,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${_storageUsedMb.toStringAsFixed(0)} MB',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                WatermarkStatusIndicator(
+                  watermarkService: widget.watermarkService,
+                ),
+                // Backlog tracker: older recordings whose post-save
+                // watermark pass never ran (app killed mid-pass, watermark
+                // disabled, ...).
+                if (_pendingWatermarkCount > 0) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '$_pendingWatermarkCount recording(s) not watermarked',
+                          style: Theme.of(
+                            context,
+                          ).textTheme.bodySmall?.copyWith(
+                            color: Colors.orange.shade800,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _watermarkPendingRecordings,
+                        child: const Text('Watermark All'),
+                      ),
+                    ],
                   ),
                 ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  String _formatStartTime(String startTimeIso) {
-    try {
-      final parsed = DateTime.parse(startTimeIso);
-      final date =
-          '${parsed.year.toString().padLeft(4, '0')}-'
-          '${parsed.month.toString().padLeft(2, '0')}-'
-          '${parsed.day.toString().padLeft(2, '0')}';
-      final time =
-          '${parsed.hour.toString().padLeft(2, '0')}:'
-          '${parsed.minute.toString().padLeft(2, '0')}:'
-          '${parsed.second.toString().padLeft(2, '0')}';
-      return '$date $time';
-    } catch (_) {
-      return startTimeIso;
-    }
-  }
-
-  /// Post-save status glyph. Mobile rows normally land on 'skipped' (no
-  /// compression runs here); 'completed' appears only on rows imported
-  /// from a desktop archive.
-  String _compressionGlyph(Transaction t) {
-    switch (t.compressionStatus) {
-      case 'completed':
-        return t.compressionRatio != null
-            ? 'compressed ${t.compressionRatio!.toStringAsFixed(1)}%'
-            : 'compressed';
-      case 'processing':
-        return 'processing...';
-      case 'failed':
-        return 'failed';
-      case 'skipped':
-        return 'saved';
-      default:
-        return 'pending';
-    }
-  }
-
-  /// Recent recordings list (UI-02): last 10, with Open File and Show in
-  /// Folder actions (STO-03).
-  Widget _buildRecentRecordings() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Recent Recordings',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 6),
-            Expanded(
-              child: _recentTransactions.isEmpty
-                  ? const Center(child: Text('No recordings yet.'))
-                  : ListView.builder(
-                      itemCount: _recentTransactions.length,
-                      itemBuilder: (context, index) {
-                        final t = _recentTransactions[index];
-                        final duration = t.durationSeconds ?? 0;
-                        final size = t.fileSizeMb ?? 0;
-                        return ListTile(
-                          dense: true,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                          ),
-                          title: Text(
-                            t.barcode,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          subtitle: Text(
-                            '${t.label}\n'
-                            '${_formatStartTime(t.startTime)} | '
-                            '${duration}s | ${size.toStringAsFixed(2)}MB | '
-                            '${_compressionGlyph(t)}',
-                          ),
-                          isThreeLine: true,
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.play_circle_outline),
-                                tooltip: 'Open File',
-                                onPressed: () => _openRecordingFile(t),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.share),
-                                tooltip: 'Share',
-                                onPressed: () => _shareRecordingFile(t),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedLabel,
+                  isDense: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Video Label',
+                    border: OutlineInputBorder(),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
                     ),
+                  ),
+                  items: _kLabelOptions
+                      .map(
+                        (label) =>
+                            DropdownMenuItem(value: label, child: Text(label)),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) setState(() => _selectedLabel = value);
+                  },
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _barcodeController,
+                        focusNode: _focusNode,
+                        decoration: const InputDecoration(
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                          hintText: 'Scan or enter barcode',
+                        ),
+                        onSubmitted: (_) => _submitBarcode(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      onPressed: _submitBarcode,
+                      tooltip: 'Submit Barcode',
+                      icon: const Icon(Icons.check),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    // Camera scan (button-armed): shows a countdown while
+                    // the scan window is open. F2 is the keyboard
+                    // equivalent.
+                    Expanded(
+                      child: ValueListenableBuilder<CameraScanState>(
+                        valueListenable: widget.cameraScanner.state,
+                        builder: (context, scan, _) {
+                          return FilledButton.tonalIcon(
+                            icon: Icon(
+                              scan.armed
+                                  ? Icons.stop_circle
+                                  : Icons.photo_camera,
+                            ),
+                            onPressed: scan.armed
+                                ? _disarmCameraScan
+                                : _armCameraScan,
+                            style: scan.armed
+                                ? FilledButton.styleFrom(
+                                    backgroundColor: _kDangerColor.withValues(
+                                      alpha: 0.1,
+                                    ),
+                                    foregroundColor: _kDangerColor,
+                                  )
+                                : null,
+                            label: Text(scan.armed ? 'Scanning...' : 'Scan'),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: _kDangerColor,
+                          foregroundColor: Colors.white,
+                        ),
+                        onPressed: isRecording ? _manualStop : null,
+                        child: const Text('Stop'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
-    );
-  }
-
-  /// Status bar (UI-03): bottom message line, auto-clears to "Ready" 5s
-  /// after each message.
-  Widget _buildStatusBar() {
-    final scheme = Theme.of(context).colorScheme;
-    final isReady = _statusBarText == 'Ready';
-    return Container(
-      color: scheme.surfaceContainerHighest,
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 6),
-      child: Row(
-        children: [
-          Icon(
-            Icons.circle,
-            size: 10,
-            color: isReady ? _kSuccessColor : scheme.primary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(_statusBarText, overflow: TextOverflow.ellipsis),
-          ),
-        ],
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ecom Video Tracker'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            tooltip: 'Search Recordings',
-            onPressed: _openSearch,
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Settings',
-            onPressed: _openSettings,
-          ),
-        ],
-      ),
-      // Scanner-first workflow: barcodes arrive from a Bluetooth HID gun or
-      // the camera scan, so the soft keyboard is rare - keep the layout
-      // stable instead of resizing under it.
-      resizeToAvoidBottomInset: false,
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            // Wide (landscape/tablet/desktop): preview beside the controls.
-            if (constraints.maxWidth >= 900) {
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(child: _buildPreviewArea()),
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    width: 380,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        _buildControlCard(),
-                        const SizedBox(height: 8),
-                        _buildStatusPanel(),
-                        const SizedBox(height: 8),
-                        Expanded(child: _buildRecentRecordings()),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            }
-            // Portrait phone: preview on top, controls stacked below,
-            // recent recordings take the remaining height.
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SizedBox(
-                  height: constraints.maxHeight * 0.35,
-                  child: _buildPreviewArea(),
-                ),
-                const SizedBox(height: 8),
-                _buildControlCard(),
-                const SizedBox(height: 8),
-                _buildStatusPanel(),
-                const SizedBox(height: 8),
-                Expanded(child: _buildRecentRecordings()),
-              ],
-            );
-          },
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        // Scanner-first workflow: barcodes arrive from a Bluetooth HID gun
+        // or the camera scan, so the soft keyboard is rare - keep the feed
+        // stable instead of resizing under it.
+        resizeToAvoidBottomInset: false,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            _buildPreviewArea(),
+            ?_buildRecordingOverlay(),
+            _buildTopBar(),
+            ?_buildStatusToast(),
+            if (_controlsExpanded) _buildControlPanel(),
+            _buildControlsToggle(),
+          ],
         ),
       ),
-      bottomNavigationBar: _buildStatusBar(),
     );
   }
 }

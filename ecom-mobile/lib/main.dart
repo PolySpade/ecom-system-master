@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'core/barcode_decoder.dart';
 import 'core/barcode_handler.dart';
@@ -39,6 +40,14 @@ const bool useHardwareKeyboardBarcodeListener = true;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // This is a handheld scanning station, not a general-purpose app - lock
+  // to portrait so the layout (and the camera preview's aspect-ratio math,
+  // which assumes portrait) never flips mid-scan when the phone tilts.
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
 
   final config = await Config.load();
 
@@ -192,6 +201,10 @@ class _EcomVideoTrackerAppState extends State<EcomVideoTrackerApp> {
   Widget build(BuildContext context) {
     final app = MaterialApp(
       title: 'Ecom Video Tracker',
+      // The full-screen preview leaves no dead space for the default debug
+      // ribbon - it otherwise sits right on top of the floating Settings
+      // icon in the top bar.
+      debugShowCheckedModeBanner: false,
       // UI-04: modern Material theme seeded from ecom-py's purple identity
       // (#667eea).
       theme: ThemeData(

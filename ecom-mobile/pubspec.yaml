@@ -47,6 +47,7 @@ dependencies:
   # Open/share saved recordings from the search screen.
   open_filex: ^4.5.0
   share_plus: ^10.1.2
+  camera_android: ^0.10.11
 
 dev_dependencies:
   flutter_test:

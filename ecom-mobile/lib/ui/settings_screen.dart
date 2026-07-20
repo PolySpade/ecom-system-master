@@ -465,21 +465,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
           style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            OutlinedButton.icon(
-              onPressed: _backupDatabase,
-              icon: const Icon(Icons.save_alt),
-              label: const Text('Backup Database...'),
-            ),
-            const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: _clearDatabase,
-              icon: const Icon(Icons.delete_forever),
-              style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-              label: const Text('Clear Database...'),
-            ),
-          ],
+        // Stacked, not side-by-side: both labels together don't fit a
+        // phone-width Row without overflowing.
+        OutlinedButton.icon(
+          onPressed: _backupDatabase,
+          icon: const Icon(Icons.save_alt),
+          label: const Text('Backup Database...'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _clearDatabase,
+          icon: const Icon(Icons.delete_forever),
+          style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+          label: const Text('Clear Database...'),
         ),
       ],
     );

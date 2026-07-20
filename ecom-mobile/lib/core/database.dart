@@ -63,7 +63,10 @@ class AppDatabase {
       dbPath,
       options: OpenDatabaseOptions(
         onConfigure: (db) async {
-          await db.execute('PRAGMA journal_mode=WAL');
+          // Android's SQLiteDatabase.execSQL() rejects statements that
+          // return a result row; journal_mode=WAL returns the resulting
+          // mode, so this must go through rawQuery, not execute.
+          await db.rawQuery('PRAGMA journal_mode=WAL');
         },
         onCreate: (db, version) async {
           await db.execute('''
@@ -376,7 +379,9 @@ class AppDatabase {
   /// Forces a WAL checkpoint first so the snapshot contains every committed
   /// transaction (the -wal sidecar is folded into the main file).
   Future<void> backupTo(String destPath) async {
-    await _db.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+    // Same execSQL-vs-rawQuery restriction as onConfigure above:
+    // wal_checkpoint returns a (busy, log, checkpointed) row.
+    await _db.rawQuery('PRAGMA wal_checkpoint(TRUNCATE)');
     await File(_db.path).copy(destPath);
     _logger.info('Database backed up to $destPath');
   }
