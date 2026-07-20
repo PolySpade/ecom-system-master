@@ -1,10 +1,14 @@
-/// Barcode Decoder - zxing_lib decode of raw BGRA preview frames.
+/// Barcode Decoder - zxing_lib decode of raw luminance preview frames.
 ///
 /// Pure functions so the heavy work can run in a background isolate via
 /// [decodeGrabbedFrame]. All common formats are enabled (Code 128/39,
 /// EAN/UPC, QR, DataMatrix, ...) per the camera-scan design; a 90-degree
 /// rotated retry handles vertically-held 1D codes, which zxing's tryHarder
 /// does not cover for row-scanning readers.
+///
+/// Android's YUV420 image stream supplies the Y plane directly - that IS
+/// the luminance channel, so no color conversion is needed (the desktop
+/// port converted BGRA here instead).
 library;
 
 import 'dart:isolate';
@@ -13,19 +17,26 @@ import 'dart:typed_data';
 import 'package:zxing_lib/common.dart';
 import 'package:zxing_lib/zxing.dart';
 
-import 'camera_frame_tap.dart';
+import 'grabbed_frame.dart';
 
 /// Frames wider than this are 2x-downsampled before decoding - a 4K frame
 /// is ~8M pixels and zxing's cost is linear in pixels, while barcode
 /// modules at packing-station distance are comfortably larger than 2px.
 const int _kDownscaleThresholdWidth = 1600;
 
-/// Decodes the first barcode found in a raw BGRA frame; null when none.
+/// Decodes the first barcode found in a raw luminance frame; null when
+/// none. [rowStride] (bytes per row, defaults to [width]) handles Y planes
+/// with row padding.
 ///
 /// Synchronous and isolate-friendly (no platform channels, no Flutter
 /// bindings) - production callers should prefer [decodeGrabbedFrame].
-String? decodeBgraFrame(Uint8List bgra, int width, int height) {
-  var luminance = _bgraToLuminance(bgra, width, height);
+String? decodeLuminanceFrame(
+  Uint8List yPlane,
+  int width,
+  int height, {
+  int? rowStride,
+}) {
+  var luminance = _stripStride(yPlane, width, height, rowStride ?? width);
   var w = width;
   var h = height;
 
@@ -43,13 +54,16 @@ String? decodeBgraFrame(Uint8List bgra, int width, int height) {
   return _decodeLuminance(rotated, rw, rh);
 }
 
-/// Isolate wrapper around [decodeBgraFrame] so decoding a full preview
-/// frame never janks the UI or the recording pipeline.
+/// Isolate wrapper around [decodeLuminanceFrame] so decoding a full
+/// preview frame never janks the UI or the recording pipeline.
 Future<String?> decodeGrabbedFrame(GrabbedFrame frame) {
   final bytes = frame.bytes;
   final width = frame.width;
   final height = frame.height;
-  return Isolate.run(() => decodeBgraFrame(bytes, width, height));
+  final rowStride = frame.rowStride;
+  return Isolate.run(
+    () => decodeLuminanceFrame(bytes, width, height, rowStride: rowStride),
+  );
 }
 
 String? _decodeLuminance(Uint8List luminance, int width, int height) {
@@ -67,18 +81,23 @@ String? _decodeLuminance(Uint8List luminance, int width, int height) {
   }
 }
 
-/// BGRA -> luminance using zxing's own green-favouring weights.
-Uint8List _bgraToLuminance(Uint8List bgra, int width, int height) {
-  final pixels = width * height;
-  final luminance = Uint8List(pixels);
-  for (var i = 0; i < pixels; i++) {
-    final o = i * 4;
-    final b = bgra[o];
-    final g = bgra[o + 1];
-    final r = bgra[o + 2];
-    luminance[i] = (r + (g << 1) + b) ~/ 4;
+/// Copies a possibly-padded Y plane into a tight width*height buffer.
+/// Returns the input untouched when there is no padding (and the buffer is
+/// already the right length).
+Uint8List _stripStride(
+  Uint8List yPlane,
+  int width,
+  int height,
+  int rowStride,
+) {
+  if (rowStride == width && yPlane.length == width * height) {
+    return yPlane;
   }
-  return luminance;
+  final tight = Uint8List(width * height);
+  for (var y = 0; y < height; y++) {
+    tight.setRange(y * width, (y + 1) * width, yPlane, y * rowStride);
+  }
+  return tight;
 }
 
 (Uint8List, int, int) _downscale2x(Uint8List src, int width, int height) {

@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:ecom_mobile/core/camera_barcode_scanner.dart';
-import 'package:ecom_mobile/core/camera_frame_tap.dart';
+import 'package:ecom_mobile/core/grabbed_frame.dart';
 import 'package:ecom_mobile/core/logger.dart';
 
 GrabbedFrame testFrame() =>

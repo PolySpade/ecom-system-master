@@ -14,7 +14,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ValueNotifier;
 
-import 'camera_frame_tap.dart';
+import 'grabbed_frame.dart';
 import 'logger.dart';
 
 /// Fetches the latest preview frame (null = none available right now).

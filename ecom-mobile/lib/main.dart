@@ -6,13 +6,14 @@
 /// instances at startup).
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'core/barcode_decoder.dart';
 import 'core/barcode_handler.dart';
 import 'core/barcode_listener.dart';
 import 'core/camera_barcode_scanner.dart';
-import 'core/camera_frame_tap.dart';
 import 'core/camera_service.dart';
 import 'core/config.dart';
 import 'core/database.dart';
@@ -76,20 +77,22 @@ Future<void> main() async {
   final barcodeHandler = BarcodeHandler();
   final barcodeListener = GlobalBarcodeListener();
 
-  // Camera barcode scan (button-armed): grabs preview frames and decodes
-  // with zxing. The decoded value feeds the SAME processBarcode path as a
-  // Bluetooth wedge scanner. (The frame grabber is the desktop native
-  // channel for now - replaced by the CameraX image stream in B4.)
-  final frameTap = CameraFrameTap();
+  // Camera barcode scan (button-armed): decodes luminance frames from the
+  // CameraX image stream with zxing - works mid-recording via the
+  // recording's frame callback. The decoded value feeds the SAME
+  // processBarcode path as a Bluetooth wedge scanner.
   final cameraScanner = CameraBarcodeScanner(
     logger,
-    grabber: () async {
-      final id = cameraService.cameraId;
-      if (id == null) return null;
-      return frameTap.grabFrame(id);
-    },
+    grabber: () async => cameraService.latestFrame(),
     decoder: decodeGrabbedFrame,
   );
+  // Arming the scanner turns the idle image stream on/off (recording keeps
+  // its own frame flow regardless).
+  cameraScanner.state.addListener(() {
+    unawaited(
+      cameraService.setScanStreamEnabled(cameraScanner.state.value.armed),
+    );
+  });
 
   // Serialized post-save watermark worker (the only re-encode on mobile -
   // recordings are already hardware-encoded at the configured bitrate, so

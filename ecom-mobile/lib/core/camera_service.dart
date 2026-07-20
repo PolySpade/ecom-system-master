@@ -20,6 +20,7 @@ import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 
 import 'file_paths.dart';
+import 'grabbed_frame.dart';
 import 'logger.dart';
 
 /// Maps a configured resolution (settings.json video.resolution_width/
@@ -93,6 +94,12 @@ class CameraService {
   ResolutionPreset _resolutionPreset = ResolutionPreset.high;
   int? _fps;
   int? _videoBitrate;
+
+  // Camera-scan frame tap: the latest luminance frame from the image
+  // stream, served to the barcode scanner's poll loop.
+  GrabbedFrame? _latestFrame;
+  DateTime? _latestFrameAt;
+  bool _scanStreamRequested = false;
 
   int _consecutiveFailures = 0;
   DateTime? _lastReinitTime;
@@ -192,6 +199,9 @@ class CameraService {
       enableAudio: false,
       fps: fps,
       videoBitrate: videoBitrate,
+      // YUV420 so the image stream's first plane is the luminance channel
+      // the barcode decoder consumes directly.
+      imageFormatGroup: ImageFormatGroup.yuv420,
     );
     try {
       await controller.initialize();
@@ -379,6 +389,58 @@ class CameraService {
     return CameraPreview(controller);
   }
 
+  // -----------------------------------------------------------------
+  // Camera-scan frame tap
+  // -----------------------------------------------------------------
+
+  /// Latest luminance frame from the active image stream, or null when no
+  /// frame fresher than [maxAge] is available (stream not running yet /
+  /// camera stalled) - the scanner's poll loop just tries again.
+  GrabbedFrame? latestFrame({Duration maxAge = const Duration(seconds: 2)}) {
+    final at = _latestFrameAt;
+    if (at == null || DateTime.now().difference(at) > maxAge) {
+      return null;
+    }
+    return _latestFrame;
+  }
+
+  void _onStreamFrame(CameraImage image) {
+    if (image.planes.isEmpty) return;
+    final plane = image.planes.first;
+    // The plugin delivers fresh Dart-owned buffers per frame; storing the
+    // reference is safe (no copy needed).
+    _latestFrame = GrabbedFrame(
+      bytes: plane.bytes,
+      width: image.width,
+      height: image.height,
+      rowStride: plane.bytesPerRow,
+    );
+    _latestFrameAt = DateTime.now();
+  }
+
+  /// Enables/disables the scan frame tap. While idle this starts/stops the
+  /// camera image stream; during a recording frames already flow through
+  /// [startRecording]'s stream callback, so this only records intent (the
+  /// post-stop path re-applies it). Never throws - a failed stream toggle
+  /// only degrades camera-scan, not recording.
+  Future<void> setScanStreamEnabled(bool enabled) async {
+    _scanStreamRequested = enabled;
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (isRecording) return;
+    try {
+      if (enabled && !controller.value.isStreamingImages) {
+        await controller.startImageStream(_onStreamFrame);
+      } else if (!enabled && controller.value.isStreamingImages) {
+        await controller.stopImageStream();
+        _latestFrame = null;
+        _latestFrameAt = null;
+      }
+    } catch (e) {
+      _logger.warning('Camera scan stream toggle failed: $e');
+    }
+  }
+
   /// Starts recording, tagging the resulting file with [barcode] and
   /// [label]. Throws a [StateError] if already recording (matches
   /// ecom-py's "Already recording" guard). Returns the full video path.
@@ -398,7 +460,18 @@ class CameraService {
     final videoPath = buildVideoPath(_videoStoragePath, barcode, labelFolder);
 
     try {
-      await controller.startVideoRecording();
+      // An idle-armed image stream must be released before recording; the
+      // recording itself re-requests frames via onAvailable below so the
+      // barcode scanner keeps working MID-RECORDING (the core continuous
+      // loop: scanning the next barcode stops this recording).
+      if (controller.value.isStreamingImages) {
+        try {
+          await controller.stopImageStream();
+        } catch (e) {
+          _logger.warning('Could not stop idle scan stream: $e');
+        }
+      }
+      await controller.startVideoRecording(onAvailable: _onStreamFrame);
 
       _currentFilename = p.basename(videoPath);
       _currentLabel = label;
@@ -468,6 +541,11 @@ class CameraService {
       );
 
       _clearRecordingState();
+
+      // Restore the idle scan stream if the scanner is still armed.
+      if (_scanStreamRequested) {
+        unawaited(setScanStreamEnabled(true));
+      }
 
       return StopRecordingResult(
         filename: filename,
