@@ -170,13 +170,23 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
   /// F2 arms the camera scan (button-armed mode). Registered as a
   /// top-level HardwareKeyboard handler alongside the wedge listener.
   bool _handleScanHotkey(KeyEvent event) {
-    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f2) {
-      if (widget.cameraScanner.state.value.armed) {
-        _disarmCameraScan();
-      } else {
-        _armCameraScan();
+    if (event is KeyDownEvent) {
+      // F2: Toggle Camera Scanner
+      if (event.logicalKey == LogicalKeyboardKey.f2) {
+        if (widget.cameraScanner.state.value.armed) {
+          _disarmCameraScan();
+        } else {
+          _armCameraScan();
+        }
+        return true;
       }
-      return true;
+      // F3: Stop Recording
+      else if (event.logicalKey == LogicalKeyboardKey.f3) {
+        if (widget.cameraService.isRecording) {
+          _manualStop();
+        }
+        return true;
+      }
     }
     return false;
   }
@@ -867,7 +877,10 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
                 Expanded(
                   child: FilledButton(
                     onPressed: _submitBarcode,
-                    child: const Text('Submit Barcode'),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('Submit Barcode'),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -878,8 +891,11 @@ class _MainScreenState extends State<MainScreen> with WindowListener {
                       foregroundColor: Colors.white,
                     ),
                     onPressed: isRecording ? _manualStop : null,
-                    child: const Text('Stop Recording'),
-                  ),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text('Stop Recording (F3)'),
+                    ),
+                  ),  
                 ),
               ],
             ),
