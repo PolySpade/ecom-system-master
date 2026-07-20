@@ -72,7 +72,7 @@ class CompressionSettings {
   /// Constant Rate Factor; clamped to 18-35 at command construction.
   final int crf;
 
-  /// FFmpeg preset (ultrafast/fast/medium/slow).
+  /// FFmpeg preset (ultrafast/veryfast/fast/medium/slow).
   final String preset;
 
   /// Replace the original with the compressed file (true, ecom-py
@@ -414,6 +414,17 @@ class VideoCompressor {
         final compressedSizeMb = outputSize / (1024 * 1024);
         final compressionRatio =
             originalSize > 0 ? (1 - outputSize / originalSize) * 100 : 0.0;
+        if (job.videoFilter != null && outputSize >= originalSize) {
+          // The overlay/flip makes this encode mandatory, so the output is
+          // kept - but with the sub-source maxrate cap this should be a
+          // rare edge case worth surfacing.
+          _logger.warning(
+            'Watermarked encode grew the file '
+            '(${originalSizeMb.toStringAsFixed(2)}MB -> '
+            '${compressedSizeMb.toStringAsFixed(2)}MB) for '
+            '${p.basename(job.videoPath)} - keeping watermarked output',
+          );
+        }
         _logger.info(
           'Compression complete: ${originalSizeMb.toStringAsFixed(2)}MB -> '
           '${compressedSizeMb.toStringAsFixed(2)}MB '
@@ -499,12 +510,16 @@ class VideoCompressor {
     final videoCodec = settings.codec == 'h265' ? 'libx265' : 'libx264';
     final crf = settings.crf.clamp(18, 35);
 
-    // Cap the encode at the source's bitrate: recordings are already H.264
-    // at the configured recording bitrate, and an uncapped CRF encode can
-    // exceed it (e.g. CRF 23 at 4K produces ~9 Mbit/s - "compressing" a
-    // 6 Mbit/s original into a larger file). null = probe unavailable,
-    // encode uncapped as before.
+    // Cap the encode below the source's bitrate: recordings are already
+    // H.264 at the configured recording bitrate, and an uncapped CRF encode
+    // can exceed it (e.g. CRF 23 at 4K produces ~9 Mbit/s - "compressing" a
+    // 6 Mbit/s original into a larger file). The cap sits at 90% of source,
+    // not 100%: an inefficient preset (ultrafast) rides the cap for the
+    // whole clip, and at 100% the VBV overshoot plus container overhead
+    // lands the output slightly ABOVE the original. null = probe
+    // unavailable, encode uncapped as before.
     final sourceKbps = await _bitrateProber(job.videoPath);
+    final maxrateKbps = sourceKbps == null ? null : sourceKbps * 9 ~/ 10;
 
     // Same invocation as ecom-py: capped threads so compression can't
     // starve capture/UI, AAC audio passthrough settings, -y to overwrite
@@ -515,9 +530,9 @@ class VideoCompressor {
       '-c:v', videoCodec,
       '-crf', '$crf',
       '-preset', settings.preset,
-      if (sourceKbps != null && sourceKbps > 0) ...[
-        '-maxrate', '${sourceKbps}k',
-        '-bufsize', '${sourceKbps * 2}k',
+      if (maxrateKbps != null && maxrateKbps > 0) ...[
+        '-maxrate', '${maxrateKbps}k',
+        '-bufsize', '${maxrateKbps * 2}k',
       ],
       '-threads', '2',
       '-c:a', 'aac',

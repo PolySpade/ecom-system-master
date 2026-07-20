@@ -270,7 +270,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 resolutionPreset: '1280x720 (HD)',
                 fps: 30,
                 bitrateKbps: 4000,
-                compressionPreset: 'ultrafast',
+                // veryfast, not ultrafast: ultrafast needs MORE bits than
+                // the lean 4 Mbit/s source at the same CRF, so it cannot
+                // shrink these recordings; veryfast is nearly as light on
+                // CPU and actually compresses.
+                compressionPreset: 'veryfast',
               ),
             ),
             FilledButton.tonalIcon(
@@ -299,7 +303,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Low-end PC: 720p, 30 FPS, 4 Mbit/s, fastest encoding - use this '
+          'Low-end PC: 720p, 30 FPS, 4 Mbit/s, fast encoding - use this '
           'if the preview or recordings lag on weaker machines.',
           style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
         ),
@@ -825,6 +829,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           items: const [
             DropdownMenuItem(
                 value: 'ultrafast', child: Text('Ultrafast (biggest files)')),
+            DropdownMenuItem(value: 'veryfast', child: Text('Very fast')),
             DropdownMenuItem(value: 'fast', child: Text('Fast')),
             DropdownMenuItem(value: 'medium', child: Text('Medium')),
             DropdownMenuItem(

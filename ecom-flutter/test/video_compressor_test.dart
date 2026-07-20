@@ -533,7 +533,7 @@ void main() {
   });
 
   group('size guard & source bitrate cap', () {
-    test('probed source bitrate adds -maxrate/-bufsize to the args', () async {
+    test('probed source bitrate caps the encode at 90% of source', () async {
       final input = createInput('video.mp4');
       final probedPaths = <String>[];
       final compressor = buildCompressor(
@@ -552,8 +552,47 @@ void main() {
 
       expect(probedPaths, [input.path]);
       final args = startedCommands.single.$2;
-      expect(args[args.indexOf('-maxrate') + 1], '6000k');
-      expect(args[args.indexOf('-bufsize') + 1], '12000k');
+      expect(args[args.indexOf('-maxrate') + 1], '5400k');
+      expect(args[args.indexOf('-bufsize') + 1], '10800k');
+
+      processes.single.completeWith(1);
+      await compressor.stop();
+    });
+
+    test('a lean 4000 kbps source (Low-end PC preset) is capped below '
+        'source so the output cannot grow', () async {
+      final input = createInput('video.mp4');
+      final compressor = buildCompressor(bitrateProber: (_) async => 4000);
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        1,
+        const CompressionSettings(preset: 'ultrafast'),
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      final args = startedCommands.single.$2;
+      expect(args[args.indexOf('-maxrate') + 1], '3600k');
+      expect(args[args.indexOf('-bufsize') + 1], '7200k');
+
+      processes.single.completeWith(1);
+      await compressor.stop();
+    });
+
+    test('a tiny probed bitrate never emits a zero maxrate', () async {
+      final input = createInput('video.mp4');
+      final compressor = buildCompressor(bitrateProber: (_) async => 1);
+      compressor.start();
+      await compressor.queueCompression(
+        input.path,
+        1,
+        const CompressionSettings(),
+      );
+      await waitUntil(() => processes.isNotEmpty, reason: 'process start');
+
+      final args = startedCommands.single.$2;
+      expect(args, isNot(contains('-maxrate')));
+      expect(args, isNot(contains('-bufsize')));
 
       processes.single.completeWith(1);
       await compressor.stop();
@@ -638,6 +677,11 @@ void main() {
       // The watermarked (larger) encode replaced the original.
       expect(input.readAsBytesSync().length, 2000);
       expect(File('${input.path}.bak').existsSync(), isFalse);
+
+      // Growth on a filtered job is logged for observability.
+      final log = File(logFilePath).readAsStringSync();
+      expect(log, contains('WARNING'));
+      expect(log, contains('grew'));
 
       await compressor.stop();
     });

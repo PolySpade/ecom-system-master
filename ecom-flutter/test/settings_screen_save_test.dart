@@ -168,7 +168,7 @@ void main() {
     expect(video['resolution_height'], 720);
     expect(video['fps'], 30);
     expect(video['recording_bitrate_kbps'], 4000);
-    expect((saved['compression'] as Map)['preset'], 'ultrafast');
+    expect((saved['compression'] as Map)['preset'], 'veryfast');
 
     // Bitrate changed from the 6000 default -> capture-affecting -> reinit
     // with the preset's bitrate.

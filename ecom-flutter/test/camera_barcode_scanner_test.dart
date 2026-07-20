@@ -41,7 +41,6 @@ void main() {
         decodeCalls++;
         return decodeCalls >= 2 ? 'CODE-99' : null;
       },
-      scanWindow: const Duration(seconds: 3),
       pollInterval: const Duration(milliseconds: 10),
     )..onBarcode = scanned.add;
 
@@ -57,25 +56,33 @@ void main() {
     expect(scanner.state.value.armed, isFalse);
   });
 
-  test('times out when nothing decodes and reports it', () async {
-    var timedOut = false;
+  test('scans continuously until disarm() cancels the loop', () async {
+    var decodeCalls = 0;
     final scanner = CameraBarcodeScanner(
       logger,
       grabber: () async => testFrame(),
-      decoder: (_) async => null,
-      scanWindow: const Duration(milliseconds: 100),
+      decoder: (_) async {
+        decodeCalls++;
+        return null; // never decodes - loop must keep going
+      },
       pollInterval: const Duration(milliseconds: 10),
-    )..onTimeout = () => timedOut = true;
+    );
 
     scanner.arm();
-    await waitUntil(() => timedOut, reason: 'timeout');
+    await waitUntil(() => decodeCalls >= 5, reason: 'continuous polling');
+    expect(scanner.state.value.armed, isTrue);
+
+    scanner.disarm();
     expect(scanner.state.value.armed, isFalse);
+    final callsAtDisarm = decodeCalls;
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    // At most the in-flight iteration finishes after disarm.
+    expect(decodeCalls, lessThanOrEqualTo(callsAtDisarm + 1));
   });
 
-  test('null frames (no preview yet) keep polling until the window ends',
+  test('null frames (no preview yet) keep polling without decoding',
       () async {
     var grabs = 0;
-    var timedOut = false;
     final scanner = CameraBarcodeScanner(
       logger,
       grabber: () async {
@@ -83,17 +90,16 @@ void main() {
         return null;
       },
       decoder: (_) async => fail('decoder must not run without a frame'),
-      scanWindow: const Duration(milliseconds: 80),
       pollInterval: const Duration(milliseconds: 10),
-    )..onTimeout = () => timedOut = true;
+    );
 
     scanner.arm();
-    await waitUntil(() => timedOut, reason: 'timeout');
-    expect(grabs, greaterThan(1));
+    await waitUntil(() => grabs > 3, reason: 'repeated grabs');
+    scanner.disarm();
+    expect(scanner.state.value.armed, isFalse);
   });
 
-  test('arm() while already armed extends the window without a second loop',
-      () async {
+  test('arm() while already armed does not start a second loop', () async {
     var decodeCalls = 0;
     final scanned = <String>[];
     final scanner = CameraBarcodeScanner(
@@ -103,7 +109,6 @@ void main() {
         decodeCalls++;
         return decodeCalls >= 4 ? 'ONE' : null;
       },
-      scanWindow: const Duration(seconds: 3),
       pollInterval: const Duration(milliseconds: 10),
     )..onBarcode = scanned.add;
 
@@ -127,7 +132,6 @@ void main() {
         if (decodeCalls == 1) throw StateError('bad frame');
         return 'RECOVERED';
       },
-      scanWindow: const Duration(seconds: 3),
       pollInterval: const Duration(milliseconds: 10),
     )..onBarcode = scanned.add;
 
