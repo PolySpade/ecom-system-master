@@ -1,18 +1,18 @@
 /// Config - thin projection of [SettingsManager] onto typed, path-resolved
 /// getters.
 ///
-/// Behavioral port of ecom-py/config.py: base dir resolves beside the
-/// executable (matching PyInstaller frozen-exe behavior), relative storage
-/// paths resolve against the base dir while absolute paths pass through
-/// unchanged. All setting values are read live from the shared
-/// [SettingsManager] (backed by settings.json, deep-merged over defaults),
-/// so changes made through the Settings screen propagate to these getters
-/// without a restart - the Dart equivalent of config.reload_config().
+/// Mobile port of the desktop config: the base dir is the app's documents
+/// directory (Android app-private storage) instead of "beside the exe" -
+/// `Platform.resolvedExecutable` points into the read-only APK install on
+/// Android. Relative storage paths resolve against the base dir while
+/// absolute paths pass through unchanged. All setting values are read live
+/// from the shared [SettingsManager] (backed by settings.json, deep-merged
+/// over defaults), so changes made through the Settings screen propagate to
+/// these getters without a restart.
 library;
 
-import 'dart:io';
-
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import 'settings_manager.dart';
 
@@ -31,15 +31,15 @@ class Config {
   /// update immediately after Save & Apply.
   final SettingsManager settingsManager;
 
-  /// Base directory: the directory containing the running executable,
-  /// matching ecom-py's `sys.frozen` "beside the executable" behavior.
+  /// Base directory: the app's documents directory (app-private storage).
   String get baseDir => _baseDir;
 
-  /// Loads config from `settings.json` beside [Platform.resolvedExecutable],
+  /// Loads config from `settings.json` in the app documents directory,
   /// deep-merging over full defaults. Tolerates a missing/invalid file by
   /// falling back to defaults entirely (T-01-03 mitigation).
-  static Config load() {
-    return loadFrom(p.dirname(Platform.resolvedExecutable));
+  static Future<Config> load() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return loadFrom(dir.path);
   }
 
   /// Same as [load] but with an explicit base directory, so the
@@ -61,17 +61,6 @@ class Config {
   }
 
   int get cameraIndex => settingsManager.getCameraIndex();
-
-  // Camera picture controls (SET-04), applied via DirectShow at startup and
-  // on Save & Apply (see camera_controls.dart).
-
-  bool get cameraAutoExposure => settingsManager.getCameraAutoExposure();
-
-  int get cameraExposure => settingsManager.getCameraExposure();
-
-  int get cameraGain => settingsManager.getCameraGain();
-
-  int get cameraBrightness => settingsManager.getCameraBrightness();
 
   String get videoStoragePath =>
       _resolvePath(settingsManager.getVideoStoragePath());

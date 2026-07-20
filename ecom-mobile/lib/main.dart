@@ -37,7 +37,7 @@ const bool useHardwareKeyboardBarcodeListener = true;
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  final config = Config.load();
+  final config = await Config.load();
 
   final logger = Logger('ecom_flutter', '${config.logPath}/app.log');
   logger.info('Application starting');
